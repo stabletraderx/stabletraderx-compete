@@ -162,6 +162,28 @@ class _ReturnChartState extends State<ReturnChart> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: const Text('All Time',
+                  style: TextStyle(color: AppColors.dim, fontSize: 11)),
+            ),
+            const Spacer(),
+            IconButton(
+              tooltip: 'Reset chart to show all players',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              icon: const Icon(Icons.refresh, size: 18, color: AppColors.dim),
+              onPressed: () => setState(() => _isolated.clear()),
+            ),
+          ],
+        ),
         _legend(),
         const SizedBox(height: 8),
         SizedBox(

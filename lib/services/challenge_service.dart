@@ -233,6 +233,14 @@ class ChallengeService {
     );
   }
 
+  /// Creator removes an idle player (deletes their holdings + seat).
+  Future<void> removeParticipant(String challengeId, String userId) async {
+    await api.restDelete('/holdings',
+        query: {'challenge_id': 'eq.$challengeId', 'user_id': 'eq.$userId'});
+    await api.restDelete('/challenge_participants',
+        query: {'challenge_id': 'eq.$challengeId', 'user_id': 'eq.$userId'});
+  }
+
   // ---- helpers ----
 
   List<Challenge> _challengeList(dynamic v) {

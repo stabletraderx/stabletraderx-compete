@@ -4,7 +4,9 @@ import '../api/api_client.dart';
 import '../main.dart';
 import '../models.dart';
 import '../services/challenge_service.dart';
+import '../widgets/ticker_tape.dart';
 import 'challenge_screen.dart';
+import 'leaderboard_screen.dart';
 import 'settings_screen.dart';
 
 /// Home after auth: Quick Start, your challenges (pending/active + completed),
@@ -90,6 +92,12 @@ class _LobbyScreenState extends State<LobbyScreen> {
     ));
   }
 
+  Future<void> _openLeaderboard() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => LeaderboardScreen(api: widget.api),
+    ));
+  }
+
   Future<void> _open(Challenge c) async {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ChallengeScreen(api: widget.api, challengeId: c.id),
@@ -151,6 +159,28 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
   }
 
+  Future<void> _dismiss(Challenge c) async {
+    setState(() => _loading = true);
+    try {
+      await _svc.dismiss(c.id);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+      await _load();
+    }
+  }
+
+  Future<void> _deleteChallenge(Challenge c) async {
+    setState(() => _loading = true);
+    try {
+      await _svc.deleteChallenge(c.id);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+      await _load();
+    }
+  }
+
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -170,6 +200,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
       appBar: AppBar(
         title: const Text('Compete'),
         actions: [
+          IconButton(
+            tooltip: 'Leaderboard',
+            icon: const Icon(Icons.emoji_events_outlined),
+            onPressed: _openLeaderboard,
+          ),
           Center(
             child: Text(
               widget.username,
@@ -188,9 +223,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
+      body: Column(
+        children: [
+          const TickerTape(),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
             _qsButton(),
@@ -242,6 +281,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
             ],
           ],
         ),
+        ),
+        ),
+      ],
       ),
     );
   }
@@ -282,10 +324,35 @@ class _LobbyScreenState extends State<LobbyScreen> {
     );
   }
 
+  Widget _lobbyProgress(Challenge c) {
+    final start = c.startAt;
+    final end = c.endAt;
+    if (start == null || end == null) return const SizedBox.shrink();
+    final total = end.difference(start).inMilliseconds;
+    if (total <= 0) return const SizedBox.shrink();
+    final pct = (DateTime.now().difference(start).inMilliseconds / total * 100)
+        .clamp(0.0, 99.0);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: LinearProgressIndicator(
+          value: pct / 100,
+          minHeight: 5,
+          backgroundColor: AppColors.line,
+          color: AppColors.green,
+        ),
+      ),
+    );
+  }
+
   Widget _card(Challenge c) {
     final color = c.status == 'completed'
         ? AppColors.ink
         : (c.status == 'active' ? AppColors.green : AppColors.gold);
+    final canDismiss = c.status == 'active' || c.status == 'completed';
+    final canHardDelete =
+        c.status == 'pending' && c.creatorId == widget.api.userAddress;
     return Card(
       color: AppColors.panel,
       margin: const EdgeInsets.only(bottom: 10),
@@ -293,15 +360,41 @@ class _LobbyScreenState extends State<LobbyScreen> {
         borderRadius: BorderRadius.circular(12),
         side: const BorderSide(color: AppColors.line),
       ),
-      child: ListTile(
-        title:
-            Text(c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(
-          '${c.mode} · ${c.denomination} · ${_statusLabel(c.status)}',
-          style: const TextStyle(color: AppColors.dim),
-        ),
-        trailing: Icon(Icons.chevron_right, color: color),
-        onTap: () => _open(c),
+      child: Column(
+        children: [
+          ListTile(
+            title: Text(c.name,
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(
+              '${c.mode} · ${c.denomination} · ${_statusLabel(c.status)}',
+              style: const TextStyle(color: AppColors.dim),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (canDismiss)
+                  IconButton(
+                    tooltip: 'Hide from my list',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_outline,
+                        size: 18, color: AppColors.red),
+                    onPressed: () => _dismiss(c),
+                  ),
+                if (canHardDelete)
+                  IconButton(
+                    tooltip: 'Delete challenge',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_forever_outlined,
+                        size: 18, color: AppColors.red),
+                    onPressed: () => _deleteChallenge(c),
+                  ),
+                Icon(Icons.chevron_right, color: color),
+              ],
+            ),
+            onTap: () => _open(c),
+          ),
+          if (c.status == 'active') _lobbyProgress(c),
+        ],
       ),
     );
   }

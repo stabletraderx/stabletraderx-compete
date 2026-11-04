@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models.dart';
+
 /// Live + historical price data. Primary source = Binance's public, keyless
 /// feed (`data-api.binance.vision`, sends CORS *, not geo-blocked — unlike
 /// `api.binance.com` which 451s). CoinGecko's free API is the fallback for coins
@@ -9,6 +11,54 @@ import 'package:http/http.dart' as http;
 /// prices and never fabricate a number to hide a rate limit.
 class PriceService {
   PriceService();
+
+  // ---- CoinGecko preset markets (ticker feed): cached ~60s in-memory ----
+  Map<String, Map<String, dynamic>>? _markets;
+  DateTime? _marketsAt;
+  static const Duration _marketsTtl = Duration(seconds: 60);
+
+  /// Live price + 24h change for the given `[symbol, cgId]` coins via CoinGecko
+  /// `/coins/markets` (chunked + parallel). Returns `cgId -> {price, pct24h}`.
+  /// Starts from the last-known spread so a partial/failed refresh never blanks
+  /// coins to 0.
+  Future<Map<String, Map<String, double>>> presetMarkets(List<Coin> coins) async {
+    final now = DateTime.now();
+    if (_markets != null &&
+        _marketsAt != null &&
+        now.difference(_marketsAt!) < _marketsTtl) {
+      return (_markets!['data'] as Map).cast<String, Map<String, double>>();
+    }
+    final out = <String, Map<String, double>>{
+      if (_markets != null && _markets!['data'] is Map)
+        for (final e in (_markets!['data'] as Map).entries)
+          e.key: Map<String, double>.from(e.value as Map),
+    };
+    final ids = coins.map((c) => c.cgId).toList();
+    try {
+      final futures = <Future<http.Response>>[];
+      for (var i = 0; i < ids.length; i += 40) {
+        final chunk = ids.sublist(i, (i + 40).clamp(0, ids.length));
+        futures.add(http.get(Uri.parse(
+            'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${chunk.join(',')}&price_change_percentage=24h')));
+      }
+      final results = await Future.wait(futures);
+      for (final r in results) {
+        if (r.statusCode != 200) continue;
+        final list = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+        for (final e in list) {
+          final cg = e['id'] as String;
+          out[cg] = {
+            'price': (e['current_price'] as num?)?.toDouble() ?? 0,
+            'pct24h':
+                (e['price_change_percentage_24h'] as num?)?.toDouble() ?? 0,
+          };
+        }
+      }
+      _markets = {'data': out};
+      _marketsAt = now;
+    } catch (_) {}
+    return out;
+  }
 
   // ---- Binance ticker (cached ~5s) ----
   Map<String, double>? _ticker;

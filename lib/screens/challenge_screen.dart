@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/api_client.dart';
 import '../main.dart';
@@ -133,7 +134,8 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
       _toast('You can only pick ${ch.maxAssets} coins.');
       return;
     }
-    final pick = await _showAddHoldingDialog();
+    final pick = await _showAddHoldingDialog(
+        await _price.presetMarkets(presetCoins));
     if (pick == null) return;
     setState(() => _busy = true);
     try {
@@ -199,6 +201,46 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _reportIssue() async {
+    final ctrl = TextEditingController();
+    final msg = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Report an issue'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 4,
+          maxLength: 500,
+          decoration: const InputDecoration(hintText: 'What went wrong?'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Submit'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (msg == null || msg.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      await widget.api.restPost('/reports', {
+        'user_id': _me,
+        'message': msg,
+        'status': 'new',
+      }, returning: false);
+      _toast('Thanks — your report was sent.');
+    } catch (e) {
+      _toast('Could not send: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<bool> _confirm(String msg) async {
@@ -365,16 +407,45 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
 
   Widget _participantTile(Participant p) {
     final submitted = p.submittedAt != null;
+    final canRemove = _isCreator && p.userId != _me;
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.zero,
       title: Text(p.username ?? p.userId,
           style: TextStyle(
               color: p.userId == _me ? AppColors.green : AppColors.ink)),
-      trailing: submitted
-          ? const Icon(Icons.check_circle, color: AppColors.green, size: 18)
-          : const Text('—', style: TextStyle(color: AppColors.dim)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          submitted
+              ? const Icon(Icons.check_circle, color: AppColors.green, size: 18)
+              : const Text('—', style: TextStyle(color: AppColors.dim)),
+          if (canRemove) ...[
+            const SizedBox(width: 8),
+            InkWell(
+              onTap: () => _removePlayer(p),
+              child: const Icon(Icons.person_remove_outlined,
+                  size: 18, color: AppColors.red),
+            ),
+          ],
+        ],
+      ),
     );
+  }
+
+  Future<void> _removePlayer(Participant p) async {
+    final ok = await _confirm(
+        'Remove ${p.username ?? p.userId} from this challenge?');
+    if (!ok) return;
+    setState(() => _busy = true);
+    try {
+      await _svc.removeParticipant(_ch!.id, p.userId);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Widget _infoPanel(Challenge ch) {
@@ -396,7 +467,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
             _kv('Duration', ch.mode),
             _kv('Stakes', '${ch.denomination} ${_money(ch.startingValue)}'),
             _kv('Coins per player', '${ch.maxAssets}'),
-            _kv('Invite code', ch.joinCode),
+            _inviteRow(ch),
           ],
         ),
       ),
@@ -424,7 +495,13 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
           holdings: _holdings,
         ),
         const SizedBox(height: 16),
-        _timeRemaining(ch),
+        _progressBar(ch),
+        const SizedBox(height: 20),
+        OutlinedButton.icon(
+          onPressed: _reportIssue,
+          icon: const Icon(Icons.flag_outlined, size: 18),
+          label: const Text('Report an issue'),
+        ),
       ],
     );
   }
@@ -587,15 +664,36 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     );
   }
 
-  Widget _timeRemaining(Challenge ch) {
+  Widget _progressBar(Challenge ch) {
+    final start = ch.startAt;
     final end = ch.endAt;
-    if (end == null) return const SizedBox.shrink();
-    final left = end.difference(DateTime.now());
-    if (left.isNegative) return const SizedBox.shrink();
-    return Text(
-      'Ends in ${left.inHours}h ${(left.inMinutes % 60).toString().padLeft(2, '0')}m',
-      textAlign: TextAlign.center,
-      style: const TextStyle(color: AppColors.dim),
+    if (start == null || end == null) return const SizedBox.shrink();
+    final total = end.difference(start).inMilliseconds;
+    if (total <= 0) return const SizedBox.shrink();
+    final now = DateTime.now();
+    final pct =
+        (now.difference(start).inMilliseconds / total * 100).clamp(0.0, 99.0);
+    final left = end.difference(now);
+    final leftStr = left.isNegative
+        ? 'ended'
+        : '${left.inHours}h ${(left.inMinutes % 60).toString().padLeft(2, '0')}m left';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: pct / 100,
+            minHeight: 6,
+            backgroundColor: AppColors.line,
+            color: AppColors.green,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text('${pct.toStringAsFixed(0)}% complete · $leftStr',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+      ],
     );
   }
 
@@ -641,6 +739,38 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     );
   }
 
+  Widget _inviteRow(Challenge ch) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(
+              width: 130,
+              child: Text('Invite code',
+                  style: TextStyle(color: AppColors.dim))),
+          Expanded(
+              child: Text(ch.joinCode,
+                  style: const TextStyle(fontWeight: FontWeight.w500))),
+          IconButton(
+            tooltip: 'Copy invite link',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(Icons.copy, size: 16, color: AppColors.green),
+            onPressed: () => _copyInvite(ch),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _copyInvite(Challenge ch) async {
+    final url = 'https://compete.stabletraderx.com/?c=${ch.joinCode}';
+    await Clipboard.setData(ClipboardData(text: url));
+    _toast('Invite link copied.');
+  }
+
   Widget _kv(String k, String v) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -671,9 +801,29 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     return v.toStringAsFixed(0);
   }
 
+  String _priceStr(double v) {
+    if (v >= 1000) return v.toStringAsFixed(0);
+    if (v >= 1) return v.toStringAsFixed(2);
+    return v.toStringAsFixed(4);
+  }
+
+  String _marketLabel(Coin c, Map<String, Map<String, double>> markets) {
+    final m = markets[c.cgId];
+    final px = m?['price'] ?? 0;
+    final pct = m?['pct24h'] ?? 0;
+    final pxStr = px > 0 ? ' · \$${_priceStr(px)}' : '';
+    final pctStr = pct != 0
+        ? ' · ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
+        : '';
+    final alt =
+        altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : '';
+    return '${c.symbol}$alt — ${c.name}$pxStr$pctStr';
+  }
+
   // ---- add-holding dialog ----
 
-  Future<({Coin coin, double stake})?> _showAddHoldingDialog() async {
+  Future<({Coin coin, double stake})?> _showAddHoldingDialog(
+      Map<String, Map<String, double>> markets) async {
     Coin? coin = presetCoins.first;
     final amountCtrl = TextEditingController();
     double? stake;
@@ -694,7 +844,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
                       .map((c) => DropdownMenuItem(
                             value: c,
                             child: Text(
-                              '${c.symbol}${altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : ''} — ${c.name}',
+                              _marketLabel(c, markets),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ))
