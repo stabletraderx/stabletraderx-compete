@@ -8,6 +8,7 @@ import '../models.dart';
 import '../preset_coins.dart';
 import '../services/challenge_service.dart';
 import '../services/price_service.dart';
+import 'return_chart.dart';
 
 /// Challenge detail. Renders pending (picks + submit + launch), active (live
 /// leaderboard), and completed (frozen results) based on status.
@@ -414,6 +415,13 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         _sectionTitle('Leaderboard'),
         ...ranked.asMap().entries.map(
             (e) => _rankTile(e.value, e.key, ch.denomination)),
+        const SizedBox(height: 16),
+        _sectionTitle('Live returns'),
+        ReturnChart(
+          challenge: ch,
+          participants: _parts,
+          holdings: _holdings,
+        ),
         const SizedBox(height: 16),
         _timeRemaining(ch),
       ],
