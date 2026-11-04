@@ -1,0 +1,654 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../api/api_client.dart';
+import '../main.dart';
+import '../models.dart';
+import '../preset_coins.dart';
+import '../services/challenge_service.dart';
+import '../services/price_service.dart';
+
+/// Challenge detail. Renders pending (picks + submit + launch), active (live
+/// leaderboard), and completed (frozen results) based on status.
+class ChallengeScreen extends StatefulWidget {
+  const ChallengeScreen({
+    super.key,
+    required this.api,
+    required this.challengeId,
+  });
+
+  final ApiClient api;
+  final String challengeId;
+
+  @override
+  State<ChallengeScreen> createState() => _ChallengeScreenState();
+}
+
+class _ChallengeScreenState extends State<ChallengeScreen> {
+  late final ChallengeService _svc = ChallengeService(widget.api);
+  final PriceService _price = PriceService();
+
+  Challenge? _ch;
+  List<Participant> _parts = const [];
+  List<Holding> _holdings = const [];
+  Map<String, double> _prices = {};
+  bool _loading = true;
+  bool _busy = false;
+  Timer? _tick;
+
+  String get _me => widget.api.userAddress ?? '';
+
+  bool get _isCreator => _ch?.creatorId == _me;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _tick = Timer.periodic(const Duration(seconds: 5), (_) => _tickRefresh());
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      var ch = await _svc.getChallenge(widget.challengeId);
+      if (ch != null) ch = await _svc.ensureFinalized(ch) ?? ch;
+      final parts = await _svc.participants(widget.challengeId);
+      final holdings = await _svc.holdings(widget.challengeId);
+      if (!mounted) return;
+      setState(() {
+        _ch = ch;
+        _parts = parts;
+        _holdings = holdings;
+        _loading = false;
+      });
+      await _refreshPrices();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _tickRefresh() async {
+    if (!mounted || _ch == null) return;
+    if (_ch!.status == 'active') {
+      await _refreshPrices();
+    } else if (_ch!.status == 'pending') {
+      final ch = await _svc.getChallenge(widget.challengeId);
+      if (!mounted || ch == null) return;
+      if (ch.status != _ch!.status) await _load();
+    }
+  }
+
+  Future<void> _refreshPrices() async {
+    final coins = <Map<String, String>>[];
+    final seen = <String>{};
+    for (final h in _holdings) {
+      final id = h.coinId ?? h.assetSymbol.toLowerCase();
+      if (seen.add(id)) {
+        coins.add({'symbol': h.assetSymbol, 'cgId': id});
+      }
+    }
+    if (coins.isEmpty) return;
+    final p = await _price.currentPrices(coins);
+    if (!mounted) return;
+    setState(() => _prices = {..._prices, ...p});
+  }
+
+  Future<double?> _coinPrice(Coin c) async {
+    final cached = _prices[c.cgId];
+    if (cached != null) return cached;
+    final p = await _price.currentPrices([
+      {'symbol': c.symbol, 'cgId': c.cgId}
+    ]);
+    return p[c.cgId];
+  }
+
+  // ---- actions ----
+
+  List<Holding> get _myHoldings =>
+      _holdings.where((h) => h.userId == _me).toList();
+
+  double get _mySpent =>
+      _myHoldings.fold(0.0, (s, h) => s + (h.stakeAmount ?? 0));
+
+  bool get _fullBalance {
+    final remaining = (_ch?.startingValue ?? 0) - _mySpent;
+    return remaining < 1e-6;
+  }
+
+  bool get _iSubmitted =>
+      _parts.any((p) => p.userId == _me && p.submittedAt != null);
+
+  Future<void> _addHolding() async {
+    final ch = _ch!;
+    if (_myHoldings.length >= ch.maxAssets) {
+      _toast('You can only pick ${ch.maxAssets} coins.');
+      return;
+    }
+    final pick = await _showAddHoldingDialog();
+    if (pick == null) return;
+    setState(() => _busy = true);
+    try {
+      final bp = await _coinPrice(pick.coin) ?? 0;
+      await _svc.addHolding(ch, pick.coin, pick.stake, bp);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deleteHolding(Holding h) async {
+    setState(() => _busy = true);
+    try {
+      await _svc.deleteHolding(h.id);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _submit() async {
+    if (!_fullBalance) {
+      _toast('Stake your full balance before submitting.');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await _svc.submit(_ch!);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _launch() async {
+    setState(() => _busy = true);
+    try {
+      await _svc.launch(_ch!);
+      await _load();
+    } catch (e) {
+      _toast(e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deleteChallenge() async {
+    final ok = await _confirm(
+        'Delete this challenge? It removes everyone\'s holdings.');
+    if (!ok) return;
+    await _svc.deleteChallenge(_ch!.id);
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<bool> _confirm(String msg) async {
+    final r = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        content: Text(msg),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Confirm')),
+        ],
+      ),
+    );
+    return r ?? false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ch = _ch;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(ch?.name ?? 'Challenge'),
+        actions: [
+          if (_isCreator && (ch?.status == 'pending'))
+            IconButton(
+              tooltip: 'Delete challenge',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: _deleteChallenge,
+            ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _buildBody(ch!),
+    );
+  }
+
+  Widget _buildBody(Challenge ch) {
+    switch (ch.status) {
+      case 'pending':
+        return _pendingView(ch);
+      case 'active':
+        return _activeView(ch);
+      case 'completed':
+        return _completedView(ch);
+      default:
+        return const Center(
+            child: Text('This challenge has ended',
+                style: TextStyle(color: AppColors.dim)));
+    }
+  }
+
+  // ---- pending ----
+
+  Widget _pendingView(Challenge ch) {
+    final submitted = _parts.where((p) => p.submittedAt != null).length;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _infoPanel(ch),
+        const SizedBox(height: 16),
+        _sectionTitle('Who\'s in (${_parts.length}/${ch.maxPlayers ?? '-'})'),
+        ..._parts.map((p) => _participantTile(p)),
+        const SizedBox(height: 16),
+        _sectionTitle('Your picks (${_myHoldings.length}/${ch.maxAssets})'),
+        if (_iSubmitted)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text('Submitted — picks locked.',
+                style: TextStyle(color: AppColors.green)),
+          )
+        else ...[
+          _myHoldingsView(ch),
+          _countdownNote(ch),
+          const SizedBox(height: 12),
+          if (_isCreator)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                '$submitted/${ch.maxPlayers ?? _parts.length} submitted — launch to lock it in and start the clock.',
+                style: const TextStyle(color: AppColors.dim),
+              ),
+            ),
+          ElevatedButton(
+            onPressed: (_busy || _iSubmitted) ? null : _submit,
+            child:
+                Text(_fullBalance ? 'Submit picks' : 'Stake your full balance'),
+          ),
+          if (_isCreator) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _launch,
+              icon: const Icon(Icons.rocket_launch_outlined),
+              label: const Text('Launch challenge'),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+
+  Widget _countdownNote(Challenge ch) {
+    if (!ch.quickstart) return const SizedBox.shrink();
+    final my = _parts.where((p) => p.userId == _me).toList();
+    if (my.isEmpty) return const SizedBox.shrink();
+    final joined = my.first.joinedAt;
+    if (joined == null) return const SizedBox.shrink();
+    final deadline = joined.add(const Duration(minutes: 5));
+    final left = deadline.difference(DateTime.now());
+    final secs = left.inSeconds.clamp(0, 300);
+    final color = secs <= 60 ? AppColors.red : AppColors.gold;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Text(
+        'Submit within ${secs ~/ 60}m ${(secs % 60).toString().padLeft(2, '0')}s',
+        style: TextStyle(color: color, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+
+  Widget _myHoldingsView(Challenge ch) {
+    final budget = ch.startingValue;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_myHoldings.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text('No picks yet — add a coin below.',
+                style: TextStyle(color: AppColors.dim)),
+          )
+        else
+          ..._myHoldings.map((h) => ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(h.assetSymbol,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                    '${_stake(h)} ${ch.denomination}${h.buyPrice != null ? ' @ ${_money(h.buyPrice!)}' : ''}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: AppColors.red),
+                  onPressed: _busy ? null : () => _deleteHolding(h),
+                ),
+              )),
+        const SizedBox(height: 8),
+        Text(
+          'Staked ${_money(_mySpent)} / ${_money(budget)} ${ch.denomination}',
+          style: const TextStyle(color: AppColors.dim),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed:
+              (_busy || _myHoldings.length >= ch.maxAssets) ? null : _addHolding,
+          icon: const Icon(Icons.add),
+          label: const Text('Add coin'),
+        ),
+      ],
+    );
+  }
+
+  Widget _participantTile(Participant p) {
+    final submitted = p.submittedAt != null;
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      title: Text(p.username ?? p.userId,
+          style: TextStyle(
+              color: p.userId == _me ? AppColors.green : AppColors.ink)),
+      trailing: submitted
+          ? const Icon(Icons.check_circle, color: AppColors.green, size: 18)
+          : const Text('—', style: TextStyle(color: AppColors.dim)),
+    );
+  }
+
+  Widget _infoPanel(Challenge ch) {
+    return Card(
+      color: AppColors.panel,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.line),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(ch.name,
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            _kv('Duration', ch.mode),
+            _kv('Stakes', '${ch.denomination} ${_money(ch.startingValue)}'),
+            _kv('Coins per player', '${ch.maxAssets}'),
+            _kv('Invite code', ch.joinCode),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---- active ----
+
+  Widget _activeView(Challenge ch) {
+    final ranked = _ranked();
+    final leader = ranked.isNotEmpty ? ranked.first : null;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        if (leader != null) _leadCard(leader, ch),
+        const SizedBox(height: 16),
+        _sectionTitle('Leaderboard'),
+        ...ranked.asMap().entries.map(
+            (e) => _rankTile(e.value, e.key, ch.denomination)),
+        const SizedBox(height: 16),
+        _timeRemaining(ch),
+      ],
+    );
+  }
+
+  List<({Participant p, double ret})> _ranked() {
+    final byUser = <String, List<Holding>>{};
+    for (final h in _holdings) {
+      byUser.putIfAbsent(h.userId, () => []).add(h);
+    }
+    final rows = _parts.map((p) {
+      if (_ch?.status == 'completed') {
+        return (p: p, ret: p.finalReturnPct ?? 0);
+      }
+      final v = playMoneyValue(byUser[p.userId] ?? const [], _prices);
+      final sv = p.startingValue;
+      final ret = sv > 0 ? (v.portfolio - v.spent) / sv * 100 : 0.0;
+      return (p: p, ret: ret);
+    }).toList();
+    rows.sort((a, b) => b.ret.compareTo(a.ret));
+    return rows;
+  }
+
+  Widget _leadCard(({Participant p, double ret}) leader, Challenge ch) {
+    return Card(
+      color: AppColors.panel,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.green),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.emoji_events, color: AppColors.gold, size: 32),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('In the lead',
+                      style: TextStyle(color: AppColors.dim, fontSize: 12)),
+                  Text(leader.p.username ?? leader.p.userId,
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ),
+            Text(_pct(leader.ret),
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: _retColor(leader.ret))),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _rankTile(
+      ({Participant p, double ret}) row, int index, String denom) {
+    final color = chartPalette[index % chartPalette.length];
+    final isMe = row.p.userId == _me;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${row.p.username ?? row.p.userId}${isMe ? ' (you)' : ''}',
+              style: TextStyle(
+                  fontWeight: isMe ? FontWeight.w700 : FontWeight.w400,
+                  color: isMe ? AppColors.green : AppColors.ink),
+            ),
+          ),
+          Text(_pct(row.ret),
+              style: TextStyle(
+                  fontWeight: FontWeight.w600, color: _retColor(row.ret))),
+        ],
+      ),
+    );
+  }
+
+  Widget _timeRemaining(Challenge ch) {
+    final end = ch.endAt;
+    if (end == null) return const SizedBox.shrink();
+    final left = end.difference(DateTime.now());
+    if (left.isNegative) return const SizedBox.shrink();
+    return Text(
+      'Ends in ${left.inHours}h ${(left.inMinutes % 60).toString().padLeft(2, '0')}m',
+      textAlign: TextAlign.center,
+      style: const TextStyle(color: AppColors.dim),
+    );
+  }
+
+  // ---- completed ----
+
+  Widget _completedView(Challenge ch) {
+    final ranked = _ranked();
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Center(
+          child: Icon(Icons.emoji_events, color: AppColors.gold, size: 64),
+        ),
+        if (ranked.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              '${ranked.first.p.username ?? 'Winner'} takes it',
+              style:
+                  const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+            ),
+          ),
+          const SizedBox(height: 24),
+          _sectionTitle('Final results'),
+          ...ranked.asMap().entries.map(
+              (e) => _rankTile(e.value, e.key, ch.denomination)),
+        ],
+      ],
+    );
+  }
+
+  // ---- shared ----
+
+  Widget _sectionTitle(String t) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(t,
+          style: const TextStyle(
+              color: AppColors.dim,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.6)),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+              width: 130,
+              child:
+                  Text(k, style: const TextStyle(color: AppColors.dim))),
+          Expanded(
+              child: Text(v,
+                  style: const TextStyle(fontWeight: FontWeight.w500))),
+        ],
+      ),
+    );
+  }
+
+  Color _retColor(double ret) => ret >= 0 ? AppColors.green : AppColors.red;
+
+  String _pct(double v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}%';
+
+  String _stake(Holding h) => _money(h.stakeAmount ?? 0);
+
+  String _money(double v) {
+    if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
+    if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}K';
+    return v.toStringAsFixed(0);
+  }
+
+  // ---- add-holding dialog ----
+
+  Future<({Coin coin, double stake})?> _showAddHoldingDialog() async {
+    Coin? coin = presetCoins.first;
+    final amountCtrl = TextEditingController();
+    double? stake;
+
+    final r = await showDialog<({Coin coin, double stake})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: const Text('Pick a coin'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<Coin>(
+                  initialValue: presetCoins.first,
+                  decoration: const InputDecoration(labelText: 'Coin'),
+                  items: presetCoins
+                      .map((c) => DropdownMenuItem(
+                            value: c,
+                            child: Text(
+                              '${c.symbol}${altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : ''} — ${c.name}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setD(() => coin = v),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: amountCtrl,
+                  autofocus: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                      labelText: 'Stake amount (STX\$)', hintText: 'e.g. 500'),
+                  onChanged: (v) =>
+                      setD(() => stake = double.tryParse(v) ?? 0),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                final c = coin;
+                final s = stake ?? 0;
+                if (c == null || s <= 0) return;
+                Navigator.pop(ctx, (coin: c, stake: s));
+              },
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    amountCtrl.dispose();
+    return r;
+  }
+}

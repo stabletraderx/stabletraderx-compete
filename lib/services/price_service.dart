@@ -1,0 +1,124 @@
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+/// Live + historical price data. Primary source = Binance's public, keyless
+/// feed (`data-api.binance.vision`, sends CORS *, not geo-blocked — unlike
+/// `api.binance.com` which 451s). CoinGecko's free API is the fallback for coins
+/// Binance lacks. Mirrors the web app's price discipline: cache last-known
+/// prices and never fabricate a number to hide a rate limit.
+class PriceService {
+  PriceService();
+
+  // ---- Binance ticker (cached ~5s) ----
+  Map<String, double>? _ticker;
+  DateTime? _tickerAt;
+  static const Duration _ttl = Duration(seconds: 5);
+
+  Future<Map<String, double>> _binanceTicker() async {
+    final now = DateTime.now();
+    if (_ticker != null &&
+        _tickerAt != null &&
+        now.difference(_tickerAt!) < _ttl) {
+      return _ticker!;
+    }
+    try {
+      final r = await http.get(
+          Uri.parse('https://data-api.binance.vision/api/v3/ticker/price'));
+      if (r.statusCode == 200) {
+        final list = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+        final m = <String, double>{};
+        for (final e in list) {
+          m[e['symbol'] as String] = double.parse(e['price'] as String);
+        }
+        _ticker = m;
+        _tickerAt = now;
+        return m;
+      }
+    } catch (_) {
+      // fall through to cache / empty
+    }
+    return _ticker ?? {};
+  }
+
+  /// Current USD price per coin, keyed by CoinGecko id. Binance ticker primary;
+  /// CoinGecko `simple/price` fallback for the symbols Binance doesn't carry.
+  Future<Map<String, double>> currentPrices(
+      List<Map<String, String>> coins) async {
+    final ticker = await _binanceTicker();
+    final result = <String, double>{};
+    final missing = <String, String>{}; // cgId -> symbol for CoinGecko fallback
+
+    for (final c in coins) {
+      final sym = c['symbol'] ?? '';
+      final cgId = c['cgId'] ?? '';
+      final binancePrice = ticker['${sym}USDT'];
+      if (binancePrice != null) {
+        result[cgId] = binancePrice;
+      } else {
+        missing[cgId] = sym;
+      }
+    }
+
+    if (missing.isNotEmpty) {
+      final ids = missing.keys.join(',');
+      try {
+        final r = await http.get(Uri.parse(
+            'https://api.coingecko.com/api/v3/simple/price?ids=$ids&vs_currencies=usd'));
+        if (r.statusCode == 200) {
+          final body = jsonDecode(r.body) as Map<String, dynamic>;
+          for (final cgId in missing.keys) {
+            final p = body[cgId];
+            if (p is Map && p['usd'] is num) {
+              result[cgId] = (p['usd'] as num).toDouble();
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return result;
+  }
+
+  /// Hourly price history for a coin over [start]..[end]. Binance `klines`
+  /// primary; CoinGecko `market_chart` fallback. Returns `(time, price)` points.
+  Future<List<(DateTime, double)>> history(
+      {required String symbol,
+      required String cgId,
+      required DateTime start,
+      required DateTime end}) async {
+    final startMs = start.millisecondsSinceEpoch;
+    final endMs = end.millisecondsSinceEpoch;
+    try {
+      final r = await http.get(Uri.parse(
+          'https://data-api.binance.vision/api/v3/klines?symbol=${symbol}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'));
+      if (r.statusCode == 200) {
+        final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
+        return rows
+            .map((k) => (
+                  DateTime.fromMillisecondsSinceEpoch((k[0] as num).toInt()),
+                  double.parse(k[4] as String),
+                ))
+            .toList();
+      }
+    } catch (_) {}
+
+    // CoinGecko fallback
+    try {
+      final days = ((end.difference(start).inHours / 24).ceil()).clamp(1, 90);
+      final r = await http.get(Uri.parse(
+          'https://api.coingecko.com/api/v3/coins/$cgId/market_chart?vs_currency=usd&days=$days'));
+      if (r.statusCode == 200) {
+        final prices =
+            (jsonDecode(r.body) as Map<String, dynamic>)['prices'] as List;
+        return prices
+            .map((p) => (
+                  DateTime.fromMillisecondsSinceEpoch((p[0] as num).toInt()),
+                  (p[1] as num).toDouble(),
+                ))
+            .toList();
+      }
+    } catch (_) {}
+
+    return const [];
+  }
+}
