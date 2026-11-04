@@ -37,6 +37,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
   bool _loading = true;
   bool _busy = false;
   Timer? _tick;
+  final Set<String> _openBreakdowns = {};
 
   String get _me => widget.api.userAddress ?? '';
 
@@ -414,7 +415,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         const SizedBox(height: 16),
         _sectionTitle('Leaderboard'),
         ...ranked.asMap().entries.map(
-            (e) => _rankTile(e.value, e.key, ch.denomination)),
+            (e) => _rankRow(e.value, e.key, ch.denomination)),
         const SizedBox(height: 16),
         _sectionTitle('Live returns'),
         ReturnChart(
@@ -482,31 +483,105 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     );
   }
 
-  Widget _rankTile(
-      ({Participant p, double ret}) row, int index, String denom) {
+  Widget _rankRow(({Participant p, double ret}) row, int index, String denom) {
+    final isOpen = _openBreakdowns.contains(row.p.userId);
     final color = chartPalette[index % chartPalette.length];
     final isMe = row.p.userId == _me;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Container(
-            width: 12,
-            height: 12,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              '${row.p.username ?? row.p.userId}${isMe ? ' (you)' : ''}',
-              style: TextStyle(
-                  fontWeight: isMe ? FontWeight.w700 : FontWeight.w400,
-                  color: isMe ? AppColors.green : AppColors.ink),
+    return Column(
+      children: [
+        InkWell(
+          onTap: () => setState(() {
+            if (isOpen) {
+              _openBreakdowns.remove(row.p.userId);
+            } else {
+              _openBreakdowns.add(row.p.userId);
+            }
+          }),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                Container(
+                  width: 12,
+                  height: 12,
+                  decoration:
+                      BoxDecoration(color: color, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '${row.p.username ?? row.p.userId}${isMe ? ' (you)' : ''}',
+                    style: TextStyle(
+                        fontWeight: isMe ? FontWeight.w700 : FontWeight.w400,
+                        color: isMe ? AppColors.green : AppColors.ink),
+                  ),
+                ),
+                Text(_pct(row.ret),
+                    style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: _retColor(row.ret))),
+                const SizedBox(width: 4),
+                Icon(isOpen ? Icons.expand_less : Icons.expand_more,
+                    size: 18, color: AppColors.dim),
+              ],
             ),
           ),
-          Text(_pct(row.ret),
+        ),
+        if (isOpen) _breakdown(row.p, denom),
+      ],
+    );
+  }
+
+  Widget _breakdown(Participant p, String denom) {
+    final mine = _holdings.where((h) => h.userId == p.userId).toList();
+    if (mine.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.only(left: 22, bottom: 12),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text('No picks',
+              style: TextStyle(color: AppColors.dim, fontSize: 12)),
+        ),
+      );
+    }
+    final isCompleted = _ch?.status == 'completed';
+    return Padding(
+      padding: const EdgeInsets.only(left: 22, bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [for (final h in mine) _holdingLine(h, isCompleted, denom)],
+      ),
+    );
+  }
+
+  Widget _holdingLine(Holding h, bool isCompleted, String denom) {
+    final entry = h.buyPrice ?? 0;
+    final cur = isCompleted
+        ? (h.finalPrice ?? 0)
+        : (_prices[h.coinId ?? h.assetSymbol.toLowerCase()] ?? 0);
+    final hasPx = entry > 0 && cur > 0;
+    final ret = hasPx ? (cur / entry - 1) * 100 : 0.0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 56,
+            child: Text(h.assetSymbol,
+                style: const TextStyle(
+                    fontWeight: FontWeight.w500, fontSize: 13)),
+          ),
+          Text('${_money(h.stakeAmount ?? 0)} $denom',
+              style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+          const Spacer(),
+          Text(hasPx ? '${_money(entry)} → ${_money(cur)}' : '—',
+              style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+          const SizedBox(width: 10),
+          Text(hasPx ? _pct(ret) : '—',
               style: TextStyle(
-                  fontWeight: FontWeight.w600, color: _retColor(row.ret))),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _retColor(ret))),
         ],
       ),
     );
@@ -546,7 +621,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
           const SizedBox(height: 24),
           _sectionTitle('Final results'),
           ...ranked.asMap().entries.map(
-              (e) => _rankTile(e.value, e.key, ch.denomination)),
+              (e) => _rankRow(e.value, e.key, ch.denomination)),
         ],
       ],
     );

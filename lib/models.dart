@@ -130,6 +130,7 @@ class Holding {
   final double quantity;
   final double? buyPrice;
   final double? stakeAmount;
+  final double? finalPrice;
   final String source;
 
   const Holding({
@@ -142,6 +143,7 @@ class Holding {
     this.quantity = 0,
     this.buyPrice,
     this.stakeAmount,
+    this.finalPrice,
     this.source = 'manual',
   });
 
@@ -156,6 +158,7 @@ class Holding {
         buyPrice: j['buy_price'] == null ? null : _d(j['buy_price']),
         stakeAmount:
             j['stake_amount'] == null ? null : _d(j['stake_amount']),
+        finalPrice: j['final_price'] == null ? null : _d(j['final_price']),
         source: _s(j['source']),
       );
 }

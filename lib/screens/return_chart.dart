@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 
 import '../main.dart';
@@ -39,6 +40,7 @@ class _ReturnChartState extends State<ReturnChart> {
   final PriceService _price = PriceService();
   List<_Series> _series = [];
   bool _loading = true;
+  final Set<String> _isolated = {};
 
   @override
   void initState() {
@@ -166,7 +168,7 @@ class _ReturnChartState extends State<ReturnChart> {
           height: 220,
           width: double.infinity,
           child: CustomPaint(
-            painter: _ChartPainter(_series, widget.challenge),
+            painter: _ChartPainter(_series, widget.challenge, Set.of(_isolated)),
           ),
         ),
       ],
@@ -174,20 +176,33 @@ class _ReturnChartState extends State<ReturnChart> {
   }
 
   Widget _legend() {
+    final dim = _isolated.isNotEmpty;
     return Wrap(
       spacing: 12,
       runSpacing: 6,
       children: [
         for (final s in _series)
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(width: 10, height: 10, color: s.color),
-              const SizedBox(width: 5),
-              Text(s.name,
-                  style: const TextStyle(
-                      fontSize: 12, color: AppColors.ink)),
-            ],
+          GestureDetector(
+            onTap: () => setState(() {
+              if (_isolated.contains(s.userId)) {
+                _isolated.remove(s.userId);
+              } else {
+                _isolated.add(s.userId);
+              }
+            }),
+            child: Opacity(
+              opacity: (dim && !_isolated.contains(s.userId)) ? 0.4 : 1.0,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(width: 10, height: 10, color: s.color),
+                  const SizedBox(width: 5),
+                  Text(s.name,
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.ink)),
+                ],
+              ),
+            ),
           ),
       ],
     );
@@ -195,10 +210,11 @@ class _ReturnChartState extends State<ReturnChart> {
 }
 
 class _ChartPainter extends CustomPainter {
-  _ChartPainter(this.series, this.challenge);
+  _ChartPainter(this.series, this.challenge, this.isolated);
 
   final List<_Series> series;
   final Challenge challenge;
+  final Set<String> isolated;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -263,11 +279,13 @@ class _ChartPainter extends CustomPainter {
       canvas.drawLine(Offset(nx, yy), Offset(nx, yy + 3), nowPaint);
     }
 
+    final anyIsolated = isolated.isNotEmpty;
     // participant lines
     for (final s in series) {
       if (s.points.length < 2) continue;
+      final dimmed = anyIsolated && !isolated.contains(s.userId);
       final paint = Paint()
-        ..color = s.color
+        ..color = s.color.withValues(alpha: dimmed ? 0.12 : 1.0)
         ..strokeWidth = 2
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round
@@ -284,8 +302,8 @@ class _ChartPainter extends CustomPainter {
       canvas.drawPath(path, paint);
       // end dot (current position)
       final last = s.points.last;
-      canvas.drawCircle(
-          Offset(x(last.t), y(last.ret)), 3, Paint()..color = s.color);
+      canvas.drawCircle(Offset(x(last.t), y(last.ret)), 3,
+          Paint()..color = s.color.withValues(alpha: dimmed ? 0.12 : 1.0));
     }
   }
 
@@ -300,5 +318,7 @@ class _ChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ChartPainter old) =>
-      old.series != series || old.challenge != challenge;
+      old.series != series ||
+      old.challenge != challenge ||
+      !setEquals(old.isolated, isolated);
 }
