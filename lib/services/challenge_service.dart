@@ -109,6 +109,27 @@ class ChallengeService {
     return _single(v);
   }
 
+  /// When a pending challenge auto-expires (matches expire-pending's rule):
+  /// >=2 active participants -> 24h after the LAST joined_at; solo -> 24h after
+  /// created_at.
+  Future<DateTime?> pendingExpiryAt(Challenge ch) async {
+    final v = await api.restGet('/challenge_participants', query: {
+      'challenge_id': 'eq.${ch.id}',
+      'removed_at': 'is.null',
+      'order': 'joined_at.asc',
+    });
+    final parts = (v is List) ? v : const [];
+    if (parts.length >= 2) {
+      final last =
+          DateTime.tryParse((parts.last as Map)['joined_at']?.toString() ?? '');
+      if (last != null) return last.add(const Duration(hours: 24));
+    }
+    if (ch.createdAt != null) {
+      return ch.createdAt!.add(const Duration(hours: 24));
+    }
+    return null;
+  }
+
   /// Enroll (or re-enroll) me as a participant. Upsert on
   /// `challenge_id,user_id` so a fresh join and a re-entry after removal both
   /// reset `removed_at` + the joined clock.

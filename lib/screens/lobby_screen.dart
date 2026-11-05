@@ -35,6 +35,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   bool _loading = true;
   bool _showCompleted = false;
   String? _err;
+  final Map<String, DateTime?> _expiryByChallenge = {};
 
   @override
   void initState() {
@@ -57,6 +58,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
         _participations = parts;
         _loading = false;
       });
+      final pending =
+          _mine().values.where((c) => c.status == 'pending').toList();
+      final expiry = <String, DateTime?>{};
+      for (final c in pending) {
+        expiry[c.id] = await _svc.pendingExpiryAt(c);
+      }
+      if (!mounted) return;
+      setState(() => _expiryByChallenge.addAll(expiry));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -324,6 +333,33 @@ class _LobbyScreenState extends State<LobbyScreen> {
     );
   }
 
+  Widget _expiryNote(Challenge c) {
+    final txt = _expiryText(c);
+    if (txt == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(txt,
+            style: const TextStyle(color: AppColors.gold, fontSize: 12)),
+      ),
+    );
+  }
+
+  String? _expiryText(Challenge c) {
+    final at = _expiryByChallenge[c.id];
+    if (at == null) return null;
+    final left = at.difference(DateTime.now());
+    if (left.isNegative) return 'expired';
+    if (left.inHours >= 24) {
+      return 'expires in ${left.inDays}d ${left.inHours % 24}h';
+    }
+    if (left.inHours >= 1) {
+      return 'expires in ${left.inHours}h ${left.inMinutes % 60}m';
+    }
+    return 'expires in ${left.inMinutes}m ${left.inSeconds % 60}s';
+  }
+
   Widget _lobbyProgress(Challenge c) {
     final start = c.startAt;
     final end = c.endAt;
@@ -394,6 +430,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
             onTap: () => _open(c),
           ),
           if (c.status == 'active') _lobbyProgress(c),
+          if (c.status == 'pending') _expiryNote(c),
         ],
       ),
     );
