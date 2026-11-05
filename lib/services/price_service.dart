@@ -93,6 +93,12 @@ class PriceService {
 
   /// Current USD price per coin, keyed by CoinGecko id. Binance ticker primary;
   /// CoinGecko `simple/price` fallback for the symbols Binance doesn't carry.
+  // Coins whose Binance symbol is a DIFFERENT token than their CoinGecko id
+  // (delisted/rebranded/ticker-taken — Litentry's "LIT" was delisted and the
+  // ticker reused). Always price these from CoinGecko so the entry (locked from
+  // CoinGecko) and the live quote agree. Expand as the web app's list grows.
+  static const Set<String> _binanceAmbiguous = {'LIT'};
+
   Future<Map<String, double>> currentPrices(
       List<Map<String, String>> coins) async {
     final ticker = await _binanceTicker();
@@ -103,7 +109,7 @@ class PriceService {
       final sym = c['symbol'] ?? '';
       final cgId = c['cgId'] ?? '';
       final binancePrice = ticker['${sym}USDT'];
-      if (binancePrice != null) {
+      if (binancePrice != null && !_binanceAmbiguous.contains(sym)) {
         result[cgId] = binancePrice;
       } else {
         missing[cgId] = sym;
@@ -138,19 +144,23 @@ class PriceService {
       required DateTime end}) async {
     final startMs = start.millisecondsSinceEpoch;
     final endMs = end.millisecondsSinceEpoch;
-    try {
-      final r = await http.get(Uri.parse(
-          'https://data-api.binance.vision/api/v3/klines?symbol=${symbol}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'));
-      if (r.statusCode == 200) {
-        final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
-        return rows
-            .map((k) => (
-                  DateTime.fromMillisecondsSinceEpoch((k[0] as num).toInt()),
-                  double.parse(k[4] as String),
-                ))
-            .toList();
-      }
-    } catch (_) {}
+    if (_binanceAmbiguous.contains(symbol)) {
+      // skip Binance — its ticker is a different token
+    } else {
+      try {
+        final r = await http.get(Uri.parse(
+            'https://data-api.binance.vision/api/v3/klines?symbol=${symbol}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'));
+        if (r.statusCode == 200) {
+          final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
+          return rows
+              .map((k) => (
+                    DateTime.fromMillisecondsSinceEpoch((k[0] as num).toInt()),
+                    double.parse(k[4] as String),
+                  ))
+              .toList();
+        }
+      } catch (_) {}
+    }
 
     // CoinGecko fallback
     try {
