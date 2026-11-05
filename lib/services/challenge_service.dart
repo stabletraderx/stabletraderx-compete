@@ -153,6 +153,7 @@ class ChallengeService {
     final v = await api.restGet('/challenge_participants', query: {
       'challenge_id': 'eq.$challengeId',
       'removed_at': 'is.null',
+      'select': '*,profiles(username,display_name)',
       'order': 'joined_at.asc',
     });
     if (v is List) {

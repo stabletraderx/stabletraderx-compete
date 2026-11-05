@@ -15,6 +15,9 @@ int? _i(dynamic v) => (v is num) ? v.toInt() : int.tryParse(v?.toString() ?? '')
 
 String _s(dynamic v) => v?.toString() ?? '';
 
+/// Strips the `u:` identity prefix for display fallback (e.g. `u:nyomouf` -> `nyomouf`).
+String _stripU(String id) => id.startsWith('u:') ? id.substring(2) : id;
+
 class Challenge {
   final String id;
   final String? creatorId;
@@ -114,9 +117,10 @@ class Participant {
         finalValue: j['final_value'] == null ? null : _d(j['final_value']),
         removedAt: _dt(j['removed_at']),
         dismissedAt: _dt(j['dismissed_at']),
-        username: j['profiles'] is Map
-            ? (j['profiles'] as Map)['username']?.toString()
-            : null,
+        username: (j['profiles'] is Map &&
+                (j['profiles'] as Map)['username'] != null)
+            ? (j['profiles'] as Map)['username'].toString()
+            : _stripU(_s(j['user_id'])),
       );
 }
 
