@@ -651,7 +651,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
           Text('${_money(h.stakeAmount ?? 0)} $denom',
               style: const TextStyle(color: AppColors.dim, fontSize: 12)),
           const Spacer(),
-          Text(hasPx ? '${_money(entry)} → ${_money(cur)}' : '—',
+          Text(hasPx ? '${fmtPrice(entry)} → ${fmtPrice(cur)}' : 'delisted',
               style: const TextStyle(color: AppColors.dim, fontSize: 12)),
           const SizedBox(width: 10),
           Text(hasPx ? _pct(ret) : '—',
@@ -801,17 +801,11 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     return v.toStringAsFixed(0);
   }
 
-  String _priceStr(double v) {
-    if (v >= 1000) return v.toStringAsFixed(0);
-    if (v >= 1) return v.toStringAsFixed(2);
-    return v.toStringAsFixed(4);
-  }
-
   String _marketLabel(Coin c, Map<String, Map<String, double>> markets) {
     final m = markets[c.cgId];
     final px = m?['price'] ?? 0;
     final pct = m?['pct24h'] ?? 0;
-    final pxStr = px > 0 ? ' · \$${_priceStr(px)}' : '';
+    final pxStr = px > 0 ? ' · ${fmtPrice(px)}' : '';
     final pctStr = pct != 0
         ? ' · ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
         : '';

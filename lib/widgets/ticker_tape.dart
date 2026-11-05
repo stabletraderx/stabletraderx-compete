@@ -82,7 +82,7 @@ class _TickerTapeState extends State<TickerTape> {
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
           const SizedBox(width: 10),
-          Text(px > 0 ? '\$${_px(px)}' : '—',
+          Text(px > 0 ? fmtPrice(px) : '—',
               style: const TextStyle(color: AppColors.dim, fontSize: 13)),
           const SizedBox(width: 10),
           Text(
@@ -97,9 +97,4 @@ class _TickerTapeState extends State<TickerTape> {
     );
   }
 
-  String _px(double v) {
-    if (v >= 1000) return v.toStringAsFixed(0);
-    if (v >= 1) return v.toStringAsFixed(2);
-    return v.toStringAsFixed(4);
   }
-}

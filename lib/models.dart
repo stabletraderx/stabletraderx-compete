@@ -2,6 +2,8 @@
 /// shapes exactly — wrong column names here surface as silent RLS failures).
 library;
 
+import 'dart:math' as math;
+
 DateTime? _dt(dynamic v) {
   if (v == null) return null;
   if (v is DateTime) return v;
@@ -17,6 +19,26 @@ String _s(dynamic v) => v?.toString() ?? '';
 
 /// Strips the `u:` identity prefix for display fallback (e.g. `u:nyomouf` -> `nyomouf`).
 String _stripU(String id) => id.startsWith('u:') ? id.substring(2) : id;
+
+/// Price formatter: normal decimals, and tiny-zero notation (`$0.0₆367`) for
+/// prices with more than 5 leading zeros ("tiny 6" = six zeros). Returns "—" for
+/// non-positive / missing.
+String fmtPrice(double n) {
+  if (n.isNaN || n <= 0) return '—';
+  if (n >= 1000) return '\$${n.toStringAsFixed(0)}';
+  if (n >= 1) return '\$${n.toStringAsFixed(2)}';
+  if (n >= 0.01) return '\$${n.toStringAsFixed(4)}';
+  if (n >= 0.000001) return '\$${n.toStringAsFixed(6)}';
+  final exp = (math.log(n) / math.ln10).floor();
+  final zeros = -exp - 1;
+  const subs = {6: '₆', 7: '₇', 8: '₈', 9: '₉', 10: '₁₀', 11: '₁₁', 12: '₁₂'};
+  final sub = subs[zeros] ?? '₍$zeros₎';
+  final mant = n / math.pow(10, exp);
+  var sig = mant.toStringAsPrecision(3).replaceAll('.', '');
+  sig = sig.replaceAll(RegExp(r'0+$'), '');
+  if (sig.isEmpty) sig = '0';
+  return '\$0.0$sub$sig';
+}
 
 class Challenge {
   final String id;
