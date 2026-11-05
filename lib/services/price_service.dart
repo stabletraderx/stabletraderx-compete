@@ -54,9 +54,22 @@ class PriceService {
           };
         }
       }
-      _markets = {'data': out};
-      _marketsAt = now;
-    } catch (_) {}
+      } catch (_) {}
+
+    // Binance fallback: fill missing/zero prices from Binance (no rate limit) so
+    // the ticker + picker never zero out. Skip ambiguous tickers (LIT/BTT/XMR).
+    final ticker = await _binanceTicker();
+    for (final c in coins) {
+      if (_binanceAmbiguous.contains(c.symbol.toUpperCase())) continue;
+      if (out[c.cgId] != null && (out[c.cgId]!['price'] ?? 0) > 0) continue;
+      final bp = ticker['${c.symbol}USDT'];
+      if (bp != null && bp > 0) {
+        out[c.cgId] = {'price': bp, 'pct24h': 0};
+      }
+    }
+
+    _markets = {'data': out};
+    _marketsAt = now;
     return out;
   }
 
