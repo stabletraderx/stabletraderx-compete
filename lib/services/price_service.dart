@@ -93,44 +93,76 @@ class PriceService {
 
   /// Current USD price per coin, keyed by CoinGecko id. Binance ticker primary;
   /// CoinGecko `simple/price` fallback for the symbols Binance doesn't carry.
-  // Coins whose Binance symbol is a DIFFERENT token than their CoinGecko id
-  // (delisted/rebranded/ticker-taken — Litentry's "LIT" was delisted and the
-  // ticker reused). Always price these from CoinGecko so the entry (locked from
-  // CoinGecko) and the live quote agree. Expand as the web app's list grows.
-  static const Set<String> _binanceAmbiguous = {'LIT'};
+  // Coins whose Binance symbol is NOT their CoinGecko token (delisted /
+  // rebranded / ticker reused by another asset). Hard guard: never trust Binance
+  // for these. The cross-check below also auto-detects NEW collisions.
+  //   LIT = Litentry   (delisted, ticker reused)  Binance 0.743 vs litentry 0.096
+  //   BTT = BitTorrent (delisted, pair is 0.00)   Binance 0.0   vs bittorrent 3.6e-7
+  //   XMR = Monero     (delisted, ticker reused)  Binance 118.7 vs monero 638.11
+  static const Set<String> _binanceAmbiguous = {'LIT', 'BTT', 'XMR'};
 
+  // CoinGecko simple/price (the authoritative cross-check source), cached ~30s.
+  Map<String, double>? _cgCache;
+  DateTime? _cgAt;
+  static const Duration _cgTtl = Duration(seconds: 30);
+
+  Future<Map<String, double>> _coingeckoSimple(List<String> ids) async {
+    if (ids.isEmpty) return const {};
+    final now = DateTime.now();
+    if (_cgCache != null && _cgAt != null && now.difference(_cgAt!) < _cgTtl) {
+      return _cgCache!;
+    }
+    final map = <String, double>{};
+    try {
+      final r = await http.get(Uri.parse(
+          'https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(',')}&vs_currencies=usd'));
+      if (r.statusCode == 200) {
+        final body = jsonDecode(r.body) as Map<String, dynamic>;
+        body.forEach((id, v) {
+          if (v is Map && v['usd'] is num) {
+            map[id] = (v['usd'] as num).toDouble();
+          }
+        });
+      }
+    } catch (_) {}
+    _cgCache = map;
+    _cgAt = now;
+    return map;
+  }
+
+  /// Current USD per coin, keyed by CoinGecko id. CoinGecko is authoritative
+  /// (it's what locks the entry price); Binance is used only when it AGREES
+  /// (fast + fresh). A >15% Binance/CoinGecko divergence means the Binance
+  /// ticker is a different token -> use CoinGecko, so entry ALWAYS equals live.
   Future<Map<String, double>> currentPrices(
       List<Map<String, String>> coins) async {
     final ticker = await _binanceTicker();
+    final ids = coins
+        .map((c) => c['cgId'] ?? '')
+        .where((id) => id.isNotEmpty)
+        .toList();
+    final cg = await _coingeckoSimple(ids);
     final result = <String, double>{};
-    final missing = <String, String>{}; // cgId -> symbol for CoinGecko fallback
 
     for (final c in coins) {
       final sym = c['symbol'] ?? '';
       final cgId = c['cgId'] ?? '';
-      final binancePrice = ticker['${sym}USDT'];
-      if (binancePrice != null && !_binanceAmbiguous.contains(sym)) {
-        result[cgId] = binancePrice;
-      } else {
-        missing[cgId] = sym;
-      }
-    }
+      final bp = ticker['${sym}USDT'];
+      final cp = cg[cgId];
 
-    if (missing.isNotEmpty) {
-      final ids = missing.keys.join(',');
-      try {
-        final r = await http.get(Uri.parse(
-            'https://api.coingecko.com/api/v3/simple/price?ids=$ids&vs_currencies=usd'));
-        if (r.statusCode == 200) {
-          final body = jsonDecode(r.body) as Map<String, dynamic>;
-          for (final cgId in missing.keys) {
-            final p = body[cgId];
-            if (p is Map && p['usd'] is num) {
-              result[cgId] = (p['usd'] as num).toDouble();
-            }
-          }
-        }
-      } catch (_) {}
+      if (_binanceAmbiguous.contains(sym)) {
+        if (cp != null && cp > 0) result[cgId] = cp;
+        continue;
+      }
+      if (bp == null || bp <= 0) {
+        if (cp != null && cp > 0) result[cgId] = cp;
+      } else if (cp != null && cp > 0 && (bp / cp - 1).abs() > 0.15) {
+        result[cgId] = cp; // collision -> CoinGecko
+      } else if (bp > 0) {
+        result[cgId] = bp; // agree -> Binance (fast + fresh)
+      } else if (cp != null && cp > 0) {
+        result[cgId] = cp;
+      }
     }
     return result;
   }
