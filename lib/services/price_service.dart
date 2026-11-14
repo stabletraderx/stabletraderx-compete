@@ -1,120 +1,273 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
 import '../models.dart';
 
-/// Live + historical price data. Primary source = Binance's public, keyless
-/// feed (`data-api.binance.vision`, sends CORS *, not geo-blocked — unlike
-/// `api.binance.com` which 451s). CoinGecko's free API is the fallback for coins
-/// Binance lacks. Mirrors the web app's price discipline: cache last-known
-/// prices and never fabricate a number to hide a rate limit.
+/// Live + historical price data, mirroring the shipped web frontend's price
+/// discipline exactly:
+///   1. CoinPaprika `/v1/tickers` = PRIMARY non-Binance source (free, keyless,
+///      no rate-limit wall): price + 24h + 7d + market cap, keyed by SYMBOL.
+///   2. Binance `/ticker/24hr` = PRIMARY price + 24h change for coins Binance
+///      lists (keyless, CORS-open, cached). `/ticker/24hr` gives the 24h % the
+///      old `/ticker/price` feed lacked.
+///   3. CoinGecko = FINAL backstop only (kept keyless as a fallback).
+///   4. >15% Binance/CoinPaprika divergence auto-detects ticker collisions;
+///      LIT/BTT/XMR are hard-guarded against Binance (their Binance ticker is a
+///      DIFFERENT token).
+/// Never fabricate a price to hide a rate limit: keep the last-known value so a
+/// partial source failure never blanks coins to 0.
 class PriceService {
   PriceService();
 
-  // ---- CoinGecko preset markets (ticker feed): cached ~60s in-memory ----
-  Map<String, Map<String, dynamic>>? _markets;
+  // ---- CoinPaprika (primary non-Binance source), keyed by ticker SYMBOL ----
+  Map<String, Map<String, dynamic>>? _cpMap;
+  DateTime? _cpAt;
+  static const Duration _cpTtl = Duration(minutes: 15);
+
+  /// Fetches CoinPaprika `/v1/tickers` (all coins, one call) and indexes by
+  /// uppercase symbol (first-wins). Cached 15 min in-memory. 6s bound.
+  Future<Map<String, Map<String, dynamic>>> _coinpaprikaTickerMap(
+      {bool force = false}) async {
+    final now = DateTime.now();
+    if (!force &&
+        _cpMap != null &&
+        _cpAt != null &&
+        now.difference(_cpAt!) < _cpTtl) {
+      return _cpMap!;
+    }
+    try {
+      final r = await http
+          .get(Uri.parse('https://api.coinpaprika.com/v1/tickers'))
+          .timeout(const Duration(seconds: 6));
+      if (r.statusCode != 200) return _cpMap ?? {};
+      final arr = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+      final bySymbol = <String, Map<String, dynamic>>{};
+      double? toD(dynamic v) => (v is num) ? v.toDouble() : null;
+      for (final x in arr) {
+        final s = (x['symbol'] ?? '').toString().toUpperCase();
+        if (s.isEmpty || bySymbol.containsKey(s)) continue;
+        final q = (x['quotes'] is Map &&
+                ((x['quotes'] as Map)['USD'] is Map))
+            ? (x['quotes'] as Map)['USD'] as Map
+            : const <String, dynamic>{};
+        bySymbol[s] = {
+          'id': x['id'],
+          'price': toD(q['price']),
+          'chg24h': toD(q['percent_change_24h']),
+          'chg7d': toD(q['percent_change_7d']),
+          'marketCap': (q['market_cap'] is num)
+              ? (q['market_cap'] as num).toDouble()
+              : 0.0,
+        };
+      }
+      _cpMap = bySymbol;
+      _cpAt = now;
+      return bySymbol;
+    } catch (_) {
+      return _cpMap ?? {};
+    }
+  }
+
+  // ---- Binance `/ticker/24hr` (price + 24h %), cached ~60s ----
+  Map<String, double>? _binPrice;
+  Map<String, double>? _binChg;
+  DateTime? _binAt;
+  static const Duration _binTtl = Duration(seconds: 60);
+
+  Future<Map<String, double>> _binanceTicker24h({bool force = false}) async {
+    final now = DateTime.now();
+    if (!force &&
+        _binPrice != null &&
+        _binAt != null &&
+        now.difference(_binAt!) < _binTtl) {
+      return _binPrice!;
+    }
+    try {
+      final r = await http
+          .get(Uri.parse('https://data-api.binance.vision/api/v3/ticker/24hr'))
+          .timeout(const Duration(seconds: 6));
+      if (r.statusCode != 200) return _binPrice ?? {};
+      final arr = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+      final m = <String, double>{};
+      final chg = <String, double>{};
+      for (final x in arr) {
+        final sym = x['symbol'] as String;
+        final lp = double.tryParse((x['lastPrice'] ?? '').toString());
+        if (lp != null) m[sym] = lp;
+        final p = double.tryParse((x['priceChangePercent'] ?? '').toString());
+        if (p != null) chg[sym] = p;
+      }
+      _binPrice = m;
+      _binChg = chg;
+      _binAt = now;
+      return m;
+    } catch (_) {
+      return _binPrice ?? {};
+    }
+  }
+
+  // Coins whose Binance symbol is NOT their token (delisted / rebranded /
+  // ticker reused by another asset). Never trust Binance for these.
+  //   LIT = Lighter (was Litentry), BTT = BitTorrent, XMR = Monero.
+  static const Set<String> _binAmbiguous = {'LIT', 'BTT', 'XMR'};
+
+  // ---- Preset markets (ticker tape + coin picker) ----
+  // cgId -> {price, pct24h, chg7d}. CoinPaprika OVERWRITES with fresh values
+  // (never fill-only, so prices don't freeze at first-seen); Binance fills
+  // price+24h where CoinPaprika lacked it; CoinGecko backstops the rest.
+  Map<String, Map<String, double>>? _markets;
   DateTime? _marketsAt;
   static const Duration _marketsTtl = Duration(seconds: 60);
 
-  /// Live price + 24h change for the given `[symbol, cgId]` coins via CoinGecko
-  /// `/coins/markets` (chunked + parallel). Returns `cgId -> {price, pct24h}`.
-  /// Starts from the last-known spread so a partial/failed refresh never blanks
-  /// coins to 0.
-  Future<Map<String, Map<String, double>>> presetMarkets(List<Coin> coins) async {
+  Future<Map<String, Map<String, double>>> presetMarkets(List<Coin> coins,
+      {bool force = false}) async {
     final now = DateTime.now();
-    if (_markets != null &&
+    if (!force &&
+        _markets != null &&
         _marketsAt != null &&
         now.difference(_marketsAt!) < _marketsTtl) {
-      return (_markets!['data'] as Map).cast<String, Map<String, double>>();
+      return _markets!;
     }
+    // Last-known warm start so a partial failure never blanks to 0.
     final out = <String, Map<String, double>>{
-      if (_markets != null && _markets!['data'] is Map)
-        for (final e in (_markets!['data'] as Map).entries)
-          e.key: Map<String, double>.from(e.value as Map),
+      if (_markets != null)
+        for (final e in _markets!.entries)
+          e.key: Map<String, double>.from(e.value),
     };
-    final ids = coins.map((c) => c.cgId).toList();
-    try {
-      final futures = <Future<http.Response>>[];
-      for (var i = 0; i < ids.length; i += 40) {
-        final chunk = ids.sublist(i, (i + 40).clamp(0, ids.length));
-        futures.add(http.get(Uri.parse(
-            'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${chunk.join(',')}&price_change_percentage=24h')));
-      }
-      final results = await Future.wait(futures);
-      for (final r in results) {
-        if (r.statusCode != 200) continue;
-        final list = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
-        for (final e in list) {
-          final cg = e['id'] as String;
-          out[cg] = {
-            'price': (e['current_price'] as num?)?.toDouble() ?? 0,
-            'pct24h':
-                (e['price_change_percentage_24h'] as num?)?.toDouble() ?? 0,
-          };
-        }
-      }
-      } catch (_) {}
 
-    // Binance fallback: fill missing/zero prices from Binance (no rate limit) so
-    // the ticker + picker never zero out. Skip ambiguous tickers (LIT/BTT/XMR).
-    final ticker = await _binanceTicker();
+    // 1) CoinPaprika primary: overwrite fresh price + 24h + 7d.
+    final cp = await _coinpaprikaTickerMap();
     for (final c in coins) {
-      if (_binanceAmbiguous.contains(c.symbol.toUpperCase())) continue;
-      if (out[c.cgId] != null && (out[c.cgId]!['price'] ?? 0) > 0) continue;
-      final bp = ticker['${c.symbol}USDT'];
-      if (bp != null && bp > 0) {
-        out[c.cgId] = {'price': bp, 'pct24h': 0};
+      final e = cp[c.symbol.toUpperCase()];
+      if (e == null) continue;
+      final price = (e['price'] is num && (e['price'] as num) > 0)
+          ? (e['price'] as num).toDouble()
+          : null;
+      final chg24h =
+          e['chg24h'] is num ? (e['chg24h'] as num).toDouble() : null;
+      final chg7d = e['chg7d'] is num ? (e['chg7d'] as num).toDouble() : null;
+      out[c.cgId] = {
+        'price': price ?? 0,
+        'pct24h': chg24h ?? 0,
+        'chg7d': chg7d ?? 0,
+      };
+    }
+
+    // 2) Binance fallback (non-ambiguous): fill price + 24h where CoinPaprika
+    //    lacked it.
+    final bin = await _binanceTicker24h();
+    final binChg = _binChg ?? {};
+    for (final c in coins) {
+      if (_binAmbiguous.contains(c.symbol.toUpperCase())) continue;
+      final bp = bin['${c.symbol}USDT'] ?? bin['${c.symbol}USD'];
+      if (bp != null &&
+          bp > 0 &&
+          !(out[c.cgId] != null && (out[c.cgId]!['price'] ?? 0) > 0)) {
+        out[c.cgId] = {
+          'price': bp,
+          'pct24h':
+              binChg['${c.symbol}USDT'] ?? binChg['${c.symbol}USD'] ?? 0,
+          'chg7d': out[c.cgId]?['chg7d'] ?? 0,
+        };
       }
     }
 
-    _markets = {'data': out};
+    // 3) CoinGecko final backstop for coins still missing.
+    final missing = coins
+        .where((c) =>
+            !(out[c.cgId] != null && (out[c.cgId]!['price'] ?? 0) > 0))
+        .map((c) => c.cgId)
+        .toList();
+    if (missing.isNotEmpty) {
+      try {
+        final futures = <Future<http.Response>>[];
+        for (var i = 0; i < missing.length; i += 40) {
+          final chunk =
+              missing.sublist(i, (i + 40).clamp(0, missing.length));
+          futures.add(http
+              .get(Uri.parse(
+                  'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${chunk.join(',')}&price_change_percentage=7d,24h'))
+              .timeout(const Duration(seconds: 4)));
+        }
+        final results = await Future.wait(futures);
+        double? f(dynamic v) => (v is num) ? v.toDouble() : null;
+        for (final r in results) {
+          if (r.statusCode != 200) continue;
+          final list =
+              (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+          for (final e in list) {
+            out[e['id'] as String] = {
+              'price': (e['current_price'] is num)
+                  ? (e['current_price'] as num).toDouble()
+                  : 0,
+              'pct24h': f(e['price_change_percentage_24h_in_currency']) ?? 0,
+              'chg7d': f(e['price_change_percentage_7d_in_currency']) ?? 0,
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
+    _markets = out;
     _marketsAt = now;
     return out;
   }
 
-  // ---- Binance ticker (cached ~5s) ----
-  Map<String, double>? _ticker;
-  DateTime? _tickerAt;
-  static const Duration _ttl = Duration(seconds: 5);
+  // ---- Current USD prices (live valuation): cgId -> price ----
+  // Binance primary when it agrees with CoinPaprika; CoinPaprika for coins
+  // Binance lacks or where the tickers collide (>15%); CoinGecko backstop for
+  // ambiguous/legacy coins (LIT/BTT/XMR + any symbol Binance doesn't trust).
+  Future<Map<String, double>> currentPrices(
+      List<Map<String, String>> coins) async {
+    final bin = await _binanceTicker24h();
+    final cp = await _coinpaprikaTickerMap();
+    final out = <String, double>{};
+    final needCg = <String>[];
 
-  Future<Map<String, double>> _binanceTicker() async {
-    final now = DateTime.now();
-    if (_ticker != null &&
-        _tickerAt != null &&
-        now.difference(_tickerAt!) < _ttl) {
-      return _ticker!;
-    }
-    try {
-      final r = await http.get(
-          Uri.parse('https://data-api.binance.vision/api/v3/ticker/price'));
-      if (r.statusCode == 200) {
-        final list = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
-        final m = <String, double>{};
-        for (final e in list) {
-          m[e['symbol'] as String] = double.parse(e['price'] as String);
-        }
-        _ticker = m;
-        _tickerAt = now;
-        return m;
+    for (final c in coins) {
+      final symbol = (c['symbol'] ?? '').toUpperCase();
+      final cgId = c['cgId'] ?? '';
+      if (cgId.isEmpty) continue;
+      final bp = bin['${symbol}USDT'];
+      final cpEntry = cp[symbol];
+      final cpv = (cpEntry != null && cpEntry['price'] is num)
+          ? (cpEntry['price'] as num).toDouble()
+          : null;
+
+      if (_binAmbiguous.contains(symbol)) {
+        // Never trust Binance for these; CoinGecko (by cgId) is authoritative
+        // for the actual token the holding references.
+        needCg.add(cgId);
+        continue;
       }
-    } catch (_) {
-      // fall through to cache / empty
+      if ((bp != null && bp > 0) && (cpv != null && cpv > 0)) {
+        if ((bp / cpv - 1).abs() > 0.15) {
+          out[cgId] = cpv; // ticker collision -> CoinPaprika
+        } else {
+          out[cgId] = bp; // agree -> Binance (fast + fresh)
+        }
+      } else if (bp != null && bp > 0) {
+        out[cgId] = bp;
+      } else if (cpv != null && cpv > 0) {
+        out[cgId] = cpv; // no Binance pair -> CoinPaprika
+      } else {
+        needCg.add(cgId); // neither -> CoinGecko backstop
+      }
     }
-    return _ticker ?? {};
+
+    if (needCg.isNotEmpty) {
+      final cg = await _coingeckoSimple(needCg);
+      for (final id in needCg) {
+        final p = cg[id];
+        if (p != null && p > 0) out[id] = p;
+      }
+    }
+    return out;
   }
 
-  /// Current USD price per coin, keyed by CoinGecko id. Binance ticker primary;
-  /// CoinGecko `simple/price` fallback for the symbols Binance doesn't carry.
-  // Coins whose Binance symbol is NOT their CoinGecko token (delisted /
-  // rebranded / ticker reused by another asset). Hard guard: never trust Binance
-  // for these. The cross-check below also auto-detects NEW collisions.
-  //   LIT = Litentry   (delisted, ticker reused)  Binance 0.743 vs litentry 0.096
-  //   BTT = BitTorrent (delisted, pair is 0.00)   Binance 0.0   vs bittorrent 3.6e-7
-  //   XMR = Monero     (delisted, ticker reused)  Binance 118.7 vs monero 638.11
-  static const Set<String> _binanceAmbiguous = {'LIT', 'BTT', 'XMR'};
-
-  // CoinGecko simple/price (the authoritative cross-check source), cached ~30s.
+  // CoinGecko simple/price (backstop), cached ~30s.
   Map<String, double>? _cgCache;
   DateTime? _cgAt;
   static const Duration _cgTtl = Duration(seconds: 30);
@@ -127,8 +280,10 @@ class PriceService {
     }
     final map = <String, double>{};
     try {
-      final r = await http.get(Uri.parse(
-          'https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(',')}&vs_currencies=usd'));
+      final r = await http
+          .get(Uri.parse(
+              'https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(',')}&vs_currencies=usd'))
+          .timeout(const Duration(seconds: 4));
       if (r.statusCode == 200) {
         final body = jsonDecode(r.body) as Map<String, dynamic>;
         body.forEach((id, v) {
@@ -143,43 +298,6 @@ class PriceService {
     return map;
   }
 
-  /// Current USD per coin, keyed by CoinGecko id. CoinGecko is authoritative
-  /// (it's what locks the entry price); Binance is used only when it AGREES
-  /// (fast + fresh). A >15% Binance/CoinGecko divergence means the Binance
-  /// ticker is a different token -> use CoinGecko, so entry ALWAYS equals live.
-  Future<Map<String, double>> currentPrices(
-      List<Map<String, String>> coins) async {
-    final ticker = await _binanceTicker();
-    final ids = coins
-        .map((c) => c['cgId'] ?? '')
-        .where((id) => id.isNotEmpty)
-        .toList();
-    final cg = await _coingeckoSimple(ids);
-    final result = <String, double>{};
-
-    for (final c in coins) {
-      final sym = c['symbol'] ?? '';
-      final cgId = c['cgId'] ?? '';
-      final bp = ticker['${sym}USDT'];
-      final cp = cg[cgId];
-
-      if (_binanceAmbiguous.contains(sym)) {
-        if (cp != null && cp > 0) result[cgId] = cp;
-        continue;
-      }
-      if (bp == null || bp <= 0) {
-        if (cp != null && cp > 0) result[cgId] = cp;
-      } else if (cp != null && cp > 0 && (bp / cp - 1).abs() > 0.15) {
-        result[cgId] = cp; // collision -> CoinGecko
-      } else if (bp > 0) {
-        result[cgId] = bp; // agree -> Binance (fast + fresh)
-      } else if (cp != null && cp > 0) {
-        result[cgId] = cp;
-      }
-    }
-    return result;
-  }
-
   /// Hourly price history for a coin over [start]..[end]. Binance `klines`
   /// primary; CoinGecko `market_chart` fallback. Returns `(time, price)` points.
   Future<List<(DateTime, double)>> history(
@@ -189,12 +307,14 @@ class PriceService {
       required DateTime end}) async {
     final startMs = start.millisecondsSinceEpoch;
     final endMs = end.millisecondsSinceEpoch;
-    if (_binanceAmbiguous.contains(symbol)) {
+    if (_binAmbiguous.contains(symbol)) {
       // skip Binance — its ticker is a different token
     } else {
       try {
-        final r = await http.get(Uri.parse(
-            'https://data-api.binance.vision/api/v3/klines?symbol=${symbol}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'));
+        final r = await http
+            .get(Uri.parse(
+                'https://data-api.binance.vision/api/v3/klines?symbol=${symbol}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'))
+            .timeout(const Duration(seconds: 3));
         if (r.statusCode == 200) {
           final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
           return rows
@@ -210,8 +330,10 @@ class PriceService {
     // CoinGecko fallback
     try {
       final days = ((end.difference(start).inHours / 24).ceil()).clamp(1, 90);
-      final r = await http.get(Uri.parse(
-          'https://api.coingecko.com/api/v3/coins/$cgId/market_chart?vs_currency=usd&days=$days'));
+      final r = await http
+          .get(Uri.parse(
+              'https://api.coingecko.com/api/v3/coins/$cgId/market_chart?vs_currency=usd&days=$days'))
+          .timeout(const Duration(seconds: 3));
       if (r.statusCode == 200) {
         final prices =
             (jsonDecode(r.body) as Map<String, dynamic>)['prices'] as List;

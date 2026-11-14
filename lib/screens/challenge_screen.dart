@@ -651,7 +651,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
           Text('${_money(h.stakeAmount ?? 0)} $denom',
               style: const TextStyle(color: AppColors.dim, fontSize: 12)),
           const Spacer(),
-          Text(hasPx ? '${fmtPrice(entry)} → ${fmtPrice(cur)}' : 'delisted',
+          Text(hasPx ? '${fmtPrice(entry)} → ${fmtPrice(cur)}' : '—',
               style: const TextStyle(color: AppColors.dim, fontSize: 12)),
           const SizedBox(width: 10),
           Text(hasPx ? _pct(ret) : '—',
