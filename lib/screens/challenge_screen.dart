@@ -39,10 +39,13 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
   bool _busy = false;
   Timer? _tick;
   final Set<String> _openBreakdowns = {};
+  bool _showAllFF = false;
 
   String get _me => widget.api.userAddress ?? '';
 
   bool get _isCreator => _ch?.creatorId == _me;
+
+  bool get _isFF => _ch?.eventType == 'friday-futures';
 
   @override
   void initState() {
@@ -107,7 +110,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     final cached = _prices[c.cgId];
     if (cached != null) return cached;
     final p = await _price.currentPrices([
-      {'symbol': c.symbol, 'cgId': c.cgId}
+      {'symbol': c.symbol, 'cgId': c.cgId},
     ]);
     return p[c.cgId];
   }
@@ -135,7 +138,8 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
       return;
     }
     final pick = await _showAddHoldingDialog(
-        await _price.presetMarkets(presetCoins));
+      await _price.presetMarkets(presetCoins),
+    );
     if (pick == null) return;
     setState(() => _busy = true);
     try {
@@ -169,6 +173,14 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     setState(() => _busy = true);
     try {
       await _svc.submit(_ch!);
+      if (_ch!.eventType == 'friday-futures') {
+        try {
+          final n = await _svc.recordFridayStreak(_ch!.id);
+          if (n != null && n > 0) {
+            _toast('🔥 $n-week Friday Futures streak — keep it alive!');
+          }
+        } catch (_) {}
+      }
       await _load();
     } catch (e) {
       _toast(e.toString());
@@ -191,7 +203,8 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
 
   Future<void> _deleteChallenge() async {
     final ok = await _confirm(
-        'Delete this challenge? It removes everyone\'s holdings.');
+      'Delete this challenge? It removes everyone\'s holdings.',
+    );
     if (!ok) return;
     await _svc.deleteChallenge(_ch!.id);
     if (!mounted) return;
@@ -218,7 +231,9 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
             child: const Text('Submit'),
@@ -250,11 +265,13 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         content: Text(msg),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Confirm')),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirm'),
+          ),
         ],
       ),
     );
@@ -292,8 +309,11 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         return _completedView(ch);
       default:
         return const Center(
-            child: Text('This challenge has ended',
-                style: TextStyle(color: AppColors.dim)));
+          child: Text(
+            'This challenge has ended',
+            style: TextStyle(color: AppColors.dim),
+          ),
+        );
     }
   }
 
@@ -305,16 +325,25 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
       padding: const EdgeInsets.all(16),
       children: [
         _infoPanel(ch),
+        if (_isFF) ...[
+          const SizedBox(height: 12),
+          const Text(
+            'Weekly event — launches every Friday at 1pm ET with everyone who has submitted. Your lineup stays private until launch.',
+            style: TextStyle(color: AppColors.dim, fontSize: 13),
+          ),
+        ],
         const SizedBox(height: 16),
         _sectionTitle('Who\'s in (${_parts.length}/${ch.maxPlayers ?? '-'})'),
-        ..._parts.map((p) => _participantTile(p)),
+        ..._ffParticipants(),
         const SizedBox(height: 16),
         _sectionTitle('Your picks (${_myHoldings.length}/${ch.maxAssets})'),
         if (_iSubmitted)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
-            child: Text('Submitted — picks locked.',
-                style: TextStyle(color: AppColors.green)),
+            child: Text(
+              'Submitted — picks locked.',
+              style: TextStyle(color: AppColors.green),
+            ),
           )
         else ...[
           _myHoldingsView(ch),
@@ -330,8 +359,9 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
             ),
           ElevatedButton(
             onPressed: (_busy || _iSubmitted) ? null : _submit,
-            child:
-                Text(_fullBalance ? 'Submit picks' : 'Stake your full balance'),
+            child: Text(
+              _fullBalance ? 'Submit picks' : 'Stake your full balance',
+            ),
           ),
           if (_isCreator) ...[
             const SizedBox(height: 10),
@@ -373,22 +403,29 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         if (_myHoldings.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 4),
-            child: Text('No picks yet — add a coin below.',
-                style: TextStyle(color: AppColors.dim)),
+            child: Text(
+              'No picks yet — add a coin below.',
+              style: TextStyle(color: AppColors.dim),
+            ),
           )
         else
-          ..._myHoldings.map((h) => ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: Text(h.assetSymbol,
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text(
-                    '${_stake(h)} ${ch.denomination}${h.buyPrice != null ? ' @ ${_money(h.buyPrice!)}' : ''}'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline, color: AppColors.red),
-                  onPressed: _busy ? null : () => _deleteHolding(h),
-                ),
-              )),
+          ..._myHoldings.map(
+            (h) => ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                h.assetSymbol,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: Text(
+                '${_stake(h)} ${ch.denomination}${h.buyPrice != null ? ' @ ${_money(h.buyPrice!)}' : ''}',
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline, color: AppColors.red),
+                onPressed: _busy ? null : () => _deleteHolding(h),
+              ),
+            ),
+          ),
         const SizedBox(height: 8),
         Text(
           'Staked ${_money(_mySpent)} / ${_money(budget)} ${ch.denomination}',
@@ -396,8 +433,9 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed:
-              (_busy || _myHoldings.length >= ch.maxAssets) ? null : _addHolding,
+          onPressed: (_busy || _myHoldings.length >= ch.maxAssets)
+              ? null
+              : _addHolding,
           icon: const Icon(Icons.add),
           label: const Text('Add coin'),
         ),
@@ -411,9 +449,12 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.zero,
-      title: Text(p.username ?? p.userId,
-          style: TextStyle(
-              color: p.userId == _me ? AppColors.green : AppColors.ink)),
+      title: Text(
+        p.username ?? p.userId,
+        style: TextStyle(
+          color: p.userId == _me ? AppColors.green : AppColors.ink,
+        ),
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -424,8 +465,11 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
             const SizedBox(width: 8),
             InkWell(
               onTap: () => _removePlayer(p),
-              child: const Icon(Icons.person_remove_outlined,
-                  size: 18, color: AppColors.red),
+              child: const Icon(
+                Icons.person_remove_outlined,
+                size: 18,
+                color: AppColors.red,
+              ),
             ),
           ],
         ],
@@ -433,9 +477,34 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     );
   }
 
+  // Friday Futures: submitters first (so the first slots show real submitters),
+  // folded behind a "Show all" toggle past the first 5.
+  List<Widget> _ffParticipants() {
+    var list = _parts;
+    if (_isFF) {
+      list = [..._parts]
+        ..sort(
+          (a, b) =>
+              (b.submittedAt != null ? 1 : 0) - (a.submittedAt != null ? 1 : 0),
+        );
+    }
+    final shown = (_isFF && !_showAllFF) ? list.take(5).toList() : list;
+    return [
+      ...shown.map((p) => _participantTile(p)),
+      if (_isFF && list.length > 5)
+        TextButton(
+          onPressed: () => setState(() => _showAllFF = !_showAllFF),
+          child: Text(
+            _showAllFF ? 'Show fewer' : 'Show all ${list.length} players',
+          ),
+        ),
+    ];
+  }
+
   Future<void> _removePlayer(Participant p) async {
     final ok = await _confirm(
-        'Remove ${p.username ?? p.userId} from this challenge?');
+      'Remove ${p.username ?? p.userId} from this challenge?',
+    );
     if (!ok) return;
     setState(() => _busy = true);
     try {
@@ -460,9 +529,10 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(ch.name,
-                style:
-                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            Text(
+              ch.name,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
             const SizedBox(height: 8),
             _kv('Duration', ch.mode),
             _kv('Stakes', '${ch.denomination} ${_money(ch.startingValue)}'),
@@ -486,14 +556,11 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         const SizedBox(height: 16),
         _sectionTitle('Leaderboard'),
         ...ranked.asMap().entries.map(
-            (e) => _rankRow(e.value, e.key, ch.denomination)),
+          (e) => _rankRow(e.value, e.key, ch.denomination),
+        ),
         const SizedBox(height: 16),
         _sectionTitle('Live returns'),
-        ReturnChart(
-          challenge: ch,
-          participants: _parts,
-          holdings: _holdings,
-        ),
+        ReturnChart(challenge: ch, participants: _parts, holdings: _holdings),
         const SizedBox(height: 16),
         _progressBar(ch),
         const SizedBox(height: 20),
@@ -541,19 +608,28 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('In the lead',
-                      style: TextStyle(color: AppColors.dim, fontSize: 12)),
-                  Text(leader.p.username ?? leader.p.userId,
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w700)),
+                  const Text(
+                    'In the lead',
+                    style: TextStyle(color: AppColors.dim, fontSize: 12),
+                  ),
+                  Text(
+                    leader.p.username ?? leader.p.userId,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ],
               ),
             ),
-            Text(_pct(leader.ret),
-                style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: _retColor(leader.ret))),
+            Text(
+              _pct(leader.ret),
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: _retColor(leader.ret),
+              ),
+            ),
           ],
         ),
       ),
@@ -581,25 +657,34 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
                 Container(
                   width: 12,
                   height: 12,
-                  decoration:
-                      BoxDecoration(color: color, shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     '${row.p.username ?? row.p.userId}${isMe ? ' (you)' : ''}',
                     style: TextStyle(
-                        fontWeight: isMe ? FontWeight.w700 : FontWeight.w400,
-                        color: isMe ? AppColors.green : AppColors.ink),
+                      fontWeight: isMe ? FontWeight.w700 : FontWeight.w400,
+                      color: isMe ? AppColors.green : AppColors.ink,
+                    ),
                   ),
                 ),
-                Text(_pct(row.ret),
-                    style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: _retColor(row.ret))),
+                Text(
+                  _pct(row.ret),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: _retColor(row.ret),
+                  ),
+                ),
                 const SizedBox(width: 4),
-                Icon(isOpen ? Icons.expand_less : Icons.expand_more,
-                    size: 18, color: AppColors.dim),
+                Icon(
+                  isOpen ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: AppColors.dim,
+                ),
               ],
             ),
           ),
@@ -610,14 +695,28 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
   }
 
   Widget _breakdown(Participant p, String denom) {
+    if (_isFF && p.userId != _me) {
+      return const Padding(
+        padding: EdgeInsets.only(left: 22, bottom: 12),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Holdings private',
+            style: TextStyle(color: AppColors.dim, fontSize: 12),
+          ),
+        ),
+      );
+    }
     final mine = _holdings.where((h) => h.userId == p.userId).toList();
     if (mine.isEmpty) {
       return const Padding(
         padding: EdgeInsets.only(left: 22, bottom: 12),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: Text('No picks',
-              style: TextStyle(color: AppColors.dim, fontSize: 12)),
+          child: Text(
+            'No picks',
+            style: TextStyle(color: AppColors.dim, fontSize: 12),
+          ),
         ),
       );
     }
@@ -644,21 +743,29 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         children: [
           SizedBox(
             width: 56,
-            child: Text(h.assetSymbol,
-                style: const TextStyle(
-                    fontWeight: FontWeight.w500, fontSize: 13)),
+            child: Text(
+              h.assetSymbol,
+              style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
+            ),
           ),
-          Text('${_money(h.stakeAmount ?? 0)} $denom',
-              style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+          Text(
+            '${_money(h.stakeAmount ?? 0)} $denom',
+            style: const TextStyle(color: AppColors.dim, fontSize: 12),
+          ),
           const Spacer(),
-          Text(hasPx ? '${fmtPrice(entry)} → ${fmtPrice(cur)}' : '—',
-              style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+          Text(
+            hasPx ? '${fmtPrice(entry)} → ${fmtPrice(cur)}' : '—',
+            style: const TextStyle(color: AppColors.dim, fontSize: 12),
+          ),
           const SizedBox(width: 10),
-          Text(hasPx ? _pct(ret) : '—',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: _retColor(ret))),
+          Text(
+            hasPx ? _pct(ret) : '—',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: _retColor(ret),
+            ),
+          ),
         ],
       ),
     );
@@ -671,8 +778,10 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     final total = end.difference(start).inMilliseconds;
     if (total <= 0) return const SizedBox.shrink();
     final now = DateTime.now();
-    final pct =
-        (now.difference(start).inMilliseconds / total * 100).clamp(0.0, 99.0);
+    final pct = (now.difference(start).inMilliseconds / total * 100).clamp(
+      0.0,
+      99.0,
+    );
     final left = end.difference(now);
     final leftStr = left.isNegative
         ? 'ended'
@@ -690,9 +799,11 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
           ),
         ),
         const SizedBox(height: 6),
-        Text('${pct.toStringAsFixed(0)}% complete · $leftStr',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+        Text(
+          '${pct.toStringAsFixed(0)}% complete · $leftStr',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: AppColors.dim, fontSize: 12),
+        ),
       ],
     );
   }
@@ -712,14 +823,14 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
           Center(
             child: Text(
               '${ranked.first.p.username ?? 'Winner'} takes it',
-              style:
-                  const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
             ),
           ),
           const SizedBox(height: 24),
           _sectionTitle('Final results'),
           ...ranked.asMap().entries.map(
-              (e) => _rankRow(e.value, e.key, ch.denomination)),
+            (e) => _rankRow(e.value, e.key, ch.denomination),
+          ),
         ],
       ],
     );
@@ -730,12 +841,15 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
   Widget _sectionTitle(String t) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: Text(t,
-          style: const TextStyle(
-              color: AppColors.dim,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.6)),
+      child: Text(
+        t,
+        style: const TextStyle(
+          color: AppColors.dim,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.6,
+        ),
+      ),
     );
   }
 
@@ -746,12 +860,15 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(
-              width: 130,
-              child: Text('Invite code',
-                  style: TextStyle(color: AppColors.dim))),
+            width: 130,
+            child: Text('Invite code', style: TextStyle(color: AppColors.dim)),
+          ),
           Expanded(
-              child: Text(ch.joinCode,
-                  style: const TextStyle(fontWeight: FontWeight.w500))),
+            child: Text(
+              ch.joinCode,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+          ),
           IconButton(
             tooltip: 'Copy invite link',
             visualDensity: VisualDensity.compact,
@@ -778,12 +895,12 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-              width: 130,
-              child:
-                  Text(k, style: const TextStyle(color: AppColors.dim))),
+            width: 130,
+            child: Text(k, style: const TextStyle(color: AppColors.dim)),
+          ),
           Expanded(
-              child: Text(v,
-                  style: const TextStyle(fontWeight: FontWeight.w500))),
+            child: Text(v, style: const TextStyle(fontWeight: FontWeight.w500)),
+          ),
         ],
       ),
     );
@@ -809,15 +926,15 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     final pctStr = pct != 0
         ? ' · ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
         : '';
-    final alt =
-        altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : '';
+    final alt = altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : '';
     return '${c.symbol}$alt — ${c.name}$pxStr$pctStr';
   }
 
   // ---- add-holding dialog ----
 
   Future<({Coin coin, double stake})?> _showAddHoldingDialog(
-      Map<String, Map<String, double>> markets) async {
+    Map<String, Map<String, double>> markets,
+  ) async {
     Coin? coin = presetCoins.first;
     final amountCtrl = TextEditingController();
     double? stake;
@@ -835,13 +952,15 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
                   initialValue: presetCoins.first,
                   decoration: const InputDecoration(labelText: 'Coin'),
                   items: presetCoins
-                      .map((c) => DropdownMenuItem(
-                            value: c,
-                            child: Text(
-                              _marketLabel(c, markets),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ))
+                      .map(
+                        (c) => DropdownMenuItem(
+                          value: c,
+                          child: Text(
+                            _marketLabel(c, markets),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
                       .toList(),
                   onChanged: (v) => setD(() => coin = v),
                 ),
@@ -851,17 +970,19 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
                   autofocus: true,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
-                      labelText: 'Stake amount (STX\$)', hintText: 'e.g. 500'),
-                  onChanged: (v) =>
-                      setD(() => stake = double.tryParse(v) ?? 0),
+                    labelText: 'Stake amount (STX\$)',
+                    hintText: 'e.g. 500',
+                  ),
+                  onChanged: (v) => setD(() => stake = double.tryParse(v) ?? 0),
                 ),
               ],
             ),
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
             ElevatedButton(
               onPressed: () {
                 final c = coin;
