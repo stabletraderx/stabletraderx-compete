@@ -15,6 +15,7 @@ class AppConfig {
   static const String ffStreakUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/ff-streak";
   static const String awardUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/award-achievements";
   static const String publicLeaderboardUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/public-leaderboard";
+  static const String myAccountUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/my-account";
 
   static const String restUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/rest/v1";
 }

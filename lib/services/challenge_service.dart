@@ -344,6 +344,40 @@ class ChallengeService {
     return (v['count'] as num).toInt();
   }
 
+  // ---- profile / gamification ----
+
+  /// My XP row (xp, level), or null if I have no XP yet.
+  Future<Map<String, dynamic>?> myXp() async {
+    return api.restGetFirst('/user_xp', query: {'user_id': 'eq.$_me'});
+  }
+
+  /// Level titles ladder (level, xp_min, title), ascending.
+  Future<List<Map<String, dynamic>>> levelTitles() async {
+    final v = await api.restGet('/level_titles', query: {'order': 'level.asc'});
+    return (v is List) ? v.cast<Map<String, dynamic>>() : const [];
+  }
+
+  /// Achievements catalog (badge, name, description, emoji, sort_order, xp).
+  Future<List<Map<String, dynamic>>> achievementsCatalog() async {
+    final v =
+        await api.restGet('/achievements', query: {'order': 'sort_order.asc'});
+    return (v is List) ? v.cast<Map<String, dynamic>>() : const [];
+  }
+
+  /// Badges I've earned (badge, earned_at).
+  Future<List<Map<String, dynamic>>> myAchievements() async {
+    final v = await api.restGet('/user_achievements',
+        query: {'user_id': 'eq.$_me', 'select': 'badge,earned_at'});
+    return (v is List) ? v.cast<Map<String, dynamic>>() : const [];
+  }
+
+  /// My email via the my-account edge fn (PII-safe — email is NOT on profiles).
+  Future<String?> myEmail() async {
+    final r = await api.edgeGet(AppConfig.myAccountUrl, auth: true);
+    if (r is Map && r['email'] != null) return r['email'].toString();
+    return null;
+  }
+
   // ---- helpers ----
 
   List<Challenge> _challengeList(dynamic v) {
