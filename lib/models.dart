@@ -52,6 +52,7 @@ class Challenge {
   final int maxAssets;
   final int? maxPlayers;
   final bool quickstart;
+  final String? eventType;
   final int? durationHours;
   final DateTime? startAt;
   final DateTime? endAt;
@@ -71,6 +72,7 @@ class Challenge {
     required this.maxAssets,
     this.maxPlayers,
     this.quickstart = false,
+    this.eventType,
     this.durationHours,
     this.startAt,
     this.endAt,
@@ -91,6 +93,7 @@ class Challenge {
         maxAssets: _i(j['max_assets']) ?? 3,
         maxPlayers: _i(j['max_players']),
         quickstart: j['quickstart'] == true,
+        eventType: j['event_type']?.toString(),
         durationHours: _i(j['duration_hours']),
         startAt: _dt(j['start_at']),
         endAt: _dt(j['end_at']),

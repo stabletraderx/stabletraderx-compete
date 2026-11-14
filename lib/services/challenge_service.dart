@@ -263,6 +263,87 @@ class ChallengeService {
         query: {'challenge_id': 'eq.$challengeId', 'user_id': 'eq.$userId'});
   }
 
+  // ---- Friday Futures (weekly event) ----
+
+  /// The current Friday Futures race (latest pending/active), or null if none.
+  Future<Challenge?> fridayFutures() async {
+    final v = await api.restGet('/challenges', query: {
+      'event_type': 'eq.friday-futures',
+      'status': 'in.(pending,active)',
+      'order': 'created_at.desc',
+      'limit': '1',
+    });
+    return _single(v);
+  }
+
+  /// My participant row for a challenge, or null if I never joined.
+  Future<Map<String, dynamic>?> mySeat(String challengeId) async {
+    return api.restGetFirst('/challenge_participants',
+        query: {'challenge_id': 'eq.$challengeId', 'user_id': 'eq.$_me'});
+  }
+
+  /// Join (or re-join) Friday Futures. Returns null on success (caller opens
+  /// the game) or a user-facing error string if blocked.
+  Future<String?> joinFridayFutures(Challenge ch) async {
+    if (ch.status != 'pending') {
+      return 'Friday Futures has already kicked off — catch the next one.';
+    }
+    final existing = await mySeat(ch.id);
+    if (existing != null && existing['removed_at'] == null) {
+      return null; // already in — just open the game
+    }
+    if (ch.maxPlayers != null) {
+      final v = await api.restGet('/challenge_participants', query: {
+        'challenge_id': 'eq.${ch.id}',
+        'removed_at': 'is.null',
+        'select': 'id',
+        'limit': '200',
+      });
+      final count = (v is List) ? v.length : 0;
+      if (count >= ch.maxPlayers!) {
+        return 'Friday Futures is full (${ch.maxPlayers} players).';
+      }
+    }
+    if (existing != null) {
+      // Re-entering after backing out: drop stale picks for a fresh start.
+      await api.restDelete('/holdings',
+          query: {'challenge_id': 'eq.${ch.id}', 'user_id': 'eq.$_me'});
+    }
+    await _enroll(ch);
+    return null;
+  }
+
+  /// Soft-remove me from Friday Futures (a distinct action from dismiss).
+  Future<void> leaveFridayFutures(String challengeId) async {
+    await api.restPatch(
+      '/challenge_participants',
+      {'removed_at': DateTime.now().toUtc().toIso8601String()},
+      query: {'challenge_id': 'eq.$challengeId', 'user_id': 'eq.$_me'},
+    );
+  }
+
+  /// POST ff-streak {challengeId} -> new streak count (or null on error).
+  Future<int?> recordFridayStreak(String challengeId) async {
+    final r = await api.edgePost(AppConfig.ffStreakUrl,
+        body: {'challengeId': challengeId});
+    if (r is Map && r['streak'] is num) return (r['streak'] as num).toInt();
+    return null;
+  }
+
+  /// POST ff-streak {challengeId, leave:true} -> revert this week's streak.
+  Future<void> revertFridayStreak(String challengeId) async {
+    await api.edgePost(AppConfig.ffStreakUrl,
+        body: {'challengeId': challengeId, 'leave': true});
+  }
+
+  /// My current Friday Futures streak count (0 if none).
+  Future<int> myStreak() async {
+    final v = await api.restGetFirst('/user_streaks',
+        query: {'user_id': 'eq.$_me', 'kind': 'eq.friday-futures'});
+    if (v == null || v['count'] == null) return 0;
+    return (v['count'] as num).toInt();
+  }
+
   // ---- helpers ----
 
   List<Challenge> _challengeList(dynamic v) {

@@ -12,6 +12,9 @@ class AppConfig {
   static const String launchUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/launch-challenge";
   static const String leaderboardUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/leaderboard";
   static const String deleteAccountUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/delete-account";
+  static const String ffStreakUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/ff-streak";
+  static const String awardUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/award-achievements";
+  static const String publicLeaderboardUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/functions/v1/public-leaderboard";
 
   static const String restUrl = "https://updmwhfqocwnlpsnmhot.supabase.co/rest/v1";
 }
