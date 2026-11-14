@@ -5,6 +5,7 @@ import '../main.dart';
 import '../models.dart';
 import '../services/challenge_service.dart';
 import '../services/deep_link_service.dart';
+import '../widgets/friday_futures_card.dart';
 import '../widgets/ticker_tape.dart';
 import 'challenge_screen.dart';
 import 'leaderboard_screen.dart';
@@ -274,7 +275,7 @@ class _HomeShellState extends State<HomeShell> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Friday Futures weekly-event card is added here in gap (1).
+          FridayFuturesCard(api: widget.api, onOpen: _open),
           _qsButton(),
           const SizedBox(height: 24),
           _sectionTitle('Set your challenge'),
