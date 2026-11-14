@@ -5,7 +5,9 @@ import '../config.dart';
 import '../main.dart';
 
 /// Worldwide leaderboard: top 3 across all completed games (from the public
-/// `leaderboard` edge function).
+/// `leaderboard` edge function). Body-only — rendered inside the shell's
+/// "Top players" tab (upgraded to the full 5-section public-leaderboard in a
+/// later parity pass).
 class LeaderboardScreen extends StatefulWidget {
   const LeaderboardScreen({super.key, required this.api});
 
@@ -52,43 +54,40 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Leaderboard')),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _err != null
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _err != null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_err!, style: const TextStyle(color: AppColors.red)),
+                      TextButton(onPressed: _load, child: const Text('Retry')),
+                    ],
+                  ),
+                )
+              : _rows.isEmpty
+                  ? const Center(
+                      child: Text('No completed games yet — go win one.',
+                          style: TextStyle(color: AppColors.dim)),
+                    )
+                  : ListView(
+                      padding: const EdgeInsets.all(16),
                       children: [
-                        Text(_err!, style: const TextStyle(color: AppColors.red)),
-                        TextButton(onPressed: _load, child: const Text('Retry')),
+                        const Text(
+                          'Best single-game returns, all-time',
+                          style: TextStyle(
+                              color: AppColors.dim,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.6),
+                        ),
+                        const SizedBox(height: 12),
+                        ..._rows.asMap().entries.map((e) => _row(e.key, e.value)),
                       ],
                     ),
-                  )
-                : _rows.isEmpty
-                    ? const Center(
-                        child: Text('No completed games yet — go win one.',
-                            style: TextStyle(color: AppColors.dim)),
-                      )
-                    : ListView(
-                        padding: const EdgeInsets.all(16),
-                        children: [
-                          const Text(
-                            'Best single-game returns, all-time',
-                            style: TextStyle(
-                                color: AppColors.dim,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0.6),
-                          ),
-                          const SizedBox(height: 12),
-                          ..._rows.asMap().entries.map((e) => _row(e.key, e.value)),
-                        ],
-                      ),
-      ),
     );
   }
 

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'api/api_client.dart';
-import 'screens/lobby_screen.dart';
+import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
 import 'services/deep_link_service.dart';
@@ -162,6 +162,6 @@ class _RootState extends State<Root> {
     if (_username == null) {
       return LoginScreen(api: _api, auth: _auth, onAuthed: _onAuthed);
     }
-    return LobbyScreen(api: _api, username: _username!, onLogout: _logout, initialIntent: _initialIntent);
+    return HomeShell(api: _api, username: _username!, onLogout: _logout, initialIntent: _initialIntent);
   }
 }

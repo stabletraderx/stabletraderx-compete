@@ -4,8 +4,10 @@ import '../api/api_client.dart';
 import '../config.dart';
 import '../main.dart';
 
-/// Settings: report an issue (insert-only `reports` table via RLS), and delete
-/// account (the `delete-account` edge function, preserve-on-delete).
+/// Profile tab: signed-in identity, report an issue (insert-only `reports` via
+/// RLS), sign out, and delete account (`delete-account` edge fn,
+/// preserve-on-delete). Levels/XP/achievements/streak readout are added here in
+/// the gamification parity pass.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -109,42 +111,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            color: AppColors.panel,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: AppColors.line),
-            ),
-            child: ListTile(
-              title: const Text('Signed in as'),
-              subtitle: Text(widget.username),
-            ),
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          color: AppColors.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: AppColors.line),
           ),
-          const SizedBox(height: 16),
-          ListTile(
-            leading: const Icon(Icons.flag_outlined),
-            title: const Text('Report an issue'),
-            subtitle: const Text('Send feedback to the team',
-                style: TextStyle(color: AppColors.dim)),
-            onTap: _busy ? null : _reportIssue,
+          child: ListTile(
+            title: const Text('Signed in as'),
+            subtitle: Text(widget.username),
           ),
-          const Divider(color: AppColors.line),
-          ListTile(
-            leading: const Icon(Icons.delete_forever_outlined,
-                color: AppColors.red),
-            title: const Text('Delete account',
-                style: TextStyle(color: AppColors.red)),
-            subtitle: const Text('Permanent — removes your data',
-                style: TextStyle(color: AppColors.dim)),
-            onTap: _busy ? null : _deleteAccount,
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 16),
+        ListTile(
+          leading: const Icon(Icons.flag_outlined),
+          title: const Text('Report an issue'),
+          subtitle: const Text('Send feedback to the team',
+              style: TextStyle(color: AppColors.dim)),
+          onTap: _busy ? null : _reportIssue,
+        ),
+        const Divider(color: AppColors.line),
+        ListTile(
+          leading: const Icon(Icons.logout),
+          title: const Text('Sign out'),
+          subtitle: const Text('Return to the login screen',
+              style: TextStyle(color: AppColors.dim)),
+          onTap: _busy ? null : widget.onLoggedOut,
+        ),
+        const Divider(color: AppColors.line),
+        ListTile(
+          leading: const Icon(Icons.delete_forever_outlined,
+              color: AppColors.red),
+          title: const Text('Delete account',
+              style: TextStyle(color: AppColors.red)),
+          subtitle: const Text('Permanent — removes your data',
+              style: TextStyle(color: AppColors.dim)),
+          onTap: _busy ? null : _deleteAccount,
+        ),
+      ],
     );
   }
 }

@@ -10,10 +10,12 @@ import 'challenge_screen.dart';
 import 'leaderboard_screen.dart';
 import 'settings_screen.dart';
 
-/// Home after auth: Quick Start, your challenges (pending/active + completed),
-/// create, and join-by-code.
-class LobbyScreen extends StatefulWidget {
-  const LobbyScreen({
+/// The shell after auth: a fixed bottom nav across four pages — Home, Challenges,
+/// Top players (leaderboard), Profile — mirroring the shipped web app. Holds the
+/// shared challenge state + deep-link intake so Home and Challenges render from
+/// one source of truth.
+class HomeShell extends StatefulWidget {
+  const HomeShell({
     super.key,
     required this.api,
     required this.username,
@@ -27,12 +29,14 @@ class LobbyScreen extends StatefulWidget {
   final DeepLinkIntent? initialIntent;
 
   @override
-  State<LobbyScreen> createState() => _LobbyScreenState();
+  State<HomeShell> createState() => _HomeShellState();
 }
 
-class _LobbyScreenState extends State<LobbyScreen> {
+class _HomeShellState extends State<HomeShell> {
   late final ChallengeService _svc = ChallengeService(widget.api);
   final DeepLinkService _deepLinks = DeepLinkService();
+
+  int _tab = 0;
 
   List<Challenge> _created = const [];
   List<Map<String, dynamic>> _participations = const [];
@@ -76,10 +80,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
       });
       final pending =
           _mine().values.where((c) => c.status == 'pending').toList();
-      final expiry = <String, DateTime?>{};
-      for (final c in pending) {
-        expiry[c.id] = await _svc.pendingExpiryAt(c);
-      }
+      final expiry = <String, DateTime?>{
+        for (final c in pending) c.id: await _svc.pendingExpiryAt(c),
+      };
       if (!mounted) return;
       setState(() => _expiryByChallenge.addAll(expiry));
     } catch (e) {
@@ -105,22 +108,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
       }
     }
     return m;
-  }
-
-  Future<void> _openSettings() async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => SettingsScreen(
-        api: widget.api,
-        username: widget.username,
-        onLoggedOut: widget.onLogout,
-      ),
-    ));
-  }
-
-  Future<void> _openLeaderboard() async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => LeaderboardScreen(api: widget.api),
-    ));
   }
 
   Future<void> _open(Challenge c) async {
@@ -223,8 +210,83 @@ class _LobbyScreenState extends State<LobbyScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  String get _title => switch (_tab) {
+        0 => 'Home',
+        1 => 'Challenges',
+        2 => 'Top players',
+        _ => 'Profile',
+      };
+
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(_title)),
+      body: Column(
+        children: [
+          const TickerTape(),
+          Expanded(
+            child: IndexedStack(
+              index: _tab,
+              children: [
+                _homeTab(),
+                _challengesTab(),
+                LeaderboardScreen(api: widget.api),
+                SettingsScreen(
+                  api: widget.api,
+                  username: widget.username,
+                  onLoggedOut: widget.onLogout,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home),
+              label: 'Home'),
+          NavigationDestination(
+              icon: Icon(Icons.grid_view_outlined),
+              selectedIcon: Icon(Icons.grid_view),
+              label: 'Challenges'),
+          NavigationDestination(
+              icon: Icon(Icons.emoji_events_outlined),
+              selectedIcon: Icon(Icons.emoji_events),
+              label: 'Top players'),
+          NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Profile'),
+        ],
+      ),
+    );
+  }
+
+  // ---- Home tab: Friday Futures (gap 1) + Quick Start + Set a challenge ----
+
+  Widget _homeTab() {
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Friday Futures weekly-event card is added here in gap (1).
+          _qsButton(),
+          const SizedBox(height: 24),
+          _sectionTitle('Set your challenge'),
+          _actionButton('+ New challenge', Icons.add, _create),
+        ],
+      ),
+    );
+  }
+
+  // ---- Challenges tab: Join + Your challenges + Completed games ----
+
+  Widget _challengesTab() {
     final all = _mine().values.toList();
     all.sort((a, b) =>
         (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));
@@ -233,94 +295,54 @@ class _LobbyScreenState extends State<LobbyScreen> {
     final active = all.where((c) => c.status == 'active').toList();
     final completed = all.where((c) => c.status == 'completed').toList();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Compete'),
-        actions: [
-          IconButton(
-            tooltip: 'Leaderboard',
-            icon: const Icon(Icons.emoji_events_outlined),
-            onPressed: _openLeaderboard,
-          ),
-          Center(
-            child: Text(
-              widget.username,
-              style: const TextStyle(color: AppColors.green),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: _openSettings,
-          ),
-          IconButton(
-            tooltip: 'Log out',
-            icon: const Icon(Icons.logout),
-            onPressed: widget.onLogout,
-          ),
-        ],
-      ),
-      body: Column(
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
         children: [
-          const TickerTape(),
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: _load,
-              child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _qsButton(),
-            const SizedBox(height: 20),
-            if (_loading && all.isEmpty)
+          _sectionTitle('Your challenges'),
+          if (_loading && all.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 40),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_err != null && all.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 20),
+              child: Column(
+                children: [
+                  Text(_err!, style: const TextStyle(color: AppColors.red)),
+                  TextButton(onPressed: _load, child: const Text('Retry')),
+                ],
+              ),
+            )
+          else ...[
+            if (pending.isEmpty && active.isEmpty)
               const Padding(
-                padding: EdgeInsets.only(top: 40),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_err != null && all.isEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 20),
-                child: Column(
-                  children: [
-                    Text(_err!, style: const TextStyle(color: AppColors.red)),
-                    TextButton(onPressed: _load, child: const Text('Retry')),
-                  ],
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text(
+                  'No active challenges — set one up from Home.',
+                  style: TextStyle(color: AppColors.dim),
                 ),
-              )
-            else ...[
-              _sectionTitle('Your challenges'),
-              if (pending.isEmpty && active.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Text(
-                    'No active challenges — set one up below.',
-                    style: TextStyle(color: AppColors.dim),
-                  ),
-                ),
-              ...active.map((c) => _card(c)),
-              ...pending.map((c) => _card(c)),
-              if (completed.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: () =>
-                      setState(() => _showCompleted = !_showCompleted),
-                  child: Text(_showCompleted
-                      ? 'Hide completed games'
-                      : 'Show ${completed.length} completed game${completed.length == 1 ? '' : 's'}'),
-                ),
-                if (_showCompleted) ...completed.map((c) => _card(c)),
-              ],
-              const SizedBox(height: 16),
-              _sectionTitle('Set your challenge'),
-              _actionButton('+ New challenge', Icons.add, _create),
-              const SizedBox(height: 16),
-              _sectionTitle('Join a challenge'),
-              _actionButton('Enter invite code', Icons.keyboard, _join),
+              ),
+            ...active.map((c) => _card(c)),
+            ...pending.map((c) => _card(c)),
+            if (completed.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () =>
+                    setState(() => _showCompleted = !_showCompleted),
+                child: Text(_showCompleted
+                    ? 'Hide completed games'
+                    : 'Show ${completed.length} completed game${completed.length == 1 ? '' : 's'}'),
+              ),
+              if (_showCompleted) ...completed.map((c) => _card(c)),
             ],
           ],
-        ),
-        ),
-        ),
-      ],
+          const SizedBox(height: 16),
+          _sectionTitle('Join a challenge'),
+          _actionButton('Enter invite code', Icons.keyboard, _join),
+        ],
       ),
     );
   }
