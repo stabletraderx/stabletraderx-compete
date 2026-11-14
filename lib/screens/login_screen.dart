@@ -63,6 +63,14 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // Scaffold placeholder — becomes the real OAuth handoff once Google/Apple
+  // client IDs are wired (see oauth-auth edge function stub).
+  void _socialSoon(String provider) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$provider sign-in is coming soon.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -164,6 +172,42 @@ class _LoginScreenState extends State<LoginScreen> {
                                   strokeWidth: 2, color: Colors.black),
                             )
                           : Text(_signup ? 'Create account' : 'Sign in'),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: const [
+                        Expanded(child: Divider(color: AppColors.line)),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12),
+                          child:
+                              Text('or', style: TextStyle(color: AppColors.dim)),
+                        ),
+                        Expanded(child: Divider(color: AppColors.line)),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    OutlinedButton(
+                      onPressed: _busy ? null : () => _socialSoon('Google'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.ink,
+                        side: const BorderSide(color: AppColors.line),
+                        minimumSize: const Size.fromHeight(48),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Continue with Google'),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton(
+                      onPressed: _busy ? null : () => _socialSoon('Apple'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.ink,
+                        side: const BorderSide(color: AppColors.line),
+                        minimumSize: const Size.fromHeight(48),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Sign in with Apple'),
                     ),
                     const SizedBox(height: 12),
                     TextButton(

@@ -4,6 +4,7 @@ import '../api/api_client.dart';
 import '../main.dart';
 import '../models.dart';
 import '../services/challenge_service.dart';
+import '../services/deep_link_service.dart';
 import '../widgets/ticker_tape.dart';
 import 'challenge_screen.dart';
 import 'leaderboard_screen.dart';
@@ -17,11 +18,13 @@ class LobbyScreen extends StatefulWidget {
     required this.api,
     required this.username,
     required this.onLogout,
+    this.initialIntent,
   });
 
   final ApiClient api;
   final String username;
   final VoidCallback onLogout;
+  final DeepLinkIntent? initialIntent;
 
   @override
   State<LobbyScreen> createState() => _LobbyScreenState();
@@ -29,6 +32,7 @@ class LobbyScreen extends StatefulWidget {
 
 class _LobbyScreenState extends State<LobbyScreen> {
   late final ChallengeService _svc = ChallengeService(widget.api);
+  final DeepLinkService _deepLinks = DeepLinkService();
 
   List<Challenge> _created = const [];
   List<Map<String, dynamic>> _participations = const [];
@@ -41,6 +45,18 @@ class _LobbyScreenState extends State<LobbyScreen> {
   void initState() {
     super.initState();
     _load();
+    _deepLinks.listen(_handleIntent);
+    if (widget.initialIntent != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _handleIntent(widget.initialIntent!);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _deepLinks.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -137,6 +153,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
   Future<void> _join() async {
     final code = await _showJoinDialog();
     if (code == null || code.isEmpty) return;
+    await _joinCode(code);
+  }
+
+  Future<void> _joinCode(String code) async {
     setState(() => _loading = true);
     try {
       final ch = await _svc.joinByCode(code);
@@ -149,6 +169,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
     } catch (e) {
       _toast(e.toString());
       await _load();
+    }
+  }
+
+  Future<void> _handleIntent(DeepLinkIntent intent) async {
+    if (intent.quickstart) {
+      await _quickStart();
+    } else if (intent.inviteCode != null) {
+      await _joinCode(intent.inviteCode!);
     }
   }
 

@@ -4,6 +4,7 @@ import 'api/api_client.dart';
 import 'screens/lobby_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
+import 'services/deep_link_service.dart';
 
 /// Brand palette — dark terminal aesthetic, green = profit/direction, red =
 /// losses. Values mirror the shipped web frontend.
@@ -108,11 +109,20 @@ class _RootState extends State<Root> {
   final AuthService _auth = AuthService();
   bool _loading = true;
   String? _username;
+  DeepLinkIntent? _initialIntent;
 
   @override
   void initState() {
     super.initState();
     _bootstrap();
+    _captureInitialLink();
+  }
+
+  Future<void> _captureInitialLink() async {
+    final intent = await DeepLinkService().initial();
+    if (intent != null && mounted) {
+      setState(() => _initialIntent = intent);
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -136,7 +146,10 @@ class _RootState extends State<Root> {
     await _auth.logout();
     _api.token = null;
     if (!mounted) return;
-    setState(() => _username = null);
+    setState(() {
+      _username = null;
+      _initialIntent = null;
+    });
   }
 
   @override
@@ -149,6 +162,6 @@ class _RootState extends State<Root> {
     if (_username == null) {
       return LoginScreen(api: _api, auth: _auth, onAuthed: _onAuthed);
     }
-    return LobbyScreen(api: _api, username: _username!, onLogout: _logout);
+    return LobbyScreen(api: _api, username: _username!, onLogout: _logout, initialIntent: _initialIntent);
   }
 }
