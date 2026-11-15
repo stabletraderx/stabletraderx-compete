@@ -398,6 +398,11 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   String? _expiryText(Challenge c) {
+    // Friday Futures is the recurring weekly event — it never expires; it
+    // launches on its own Friday schedule (non-submitters are kicked at 1pm ET).
+    if (c.eventType == 'friday-futures') {
+      return 'launches every Friday 1pm ET';
+    }
     final at = _expiryByChallenge[c.id];
     if (at == null) return null;
     final left = at.difference(DateTime.now());

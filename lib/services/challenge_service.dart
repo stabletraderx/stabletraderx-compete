@@ -111,8 +111,10 @@ class ChallengeService {
 
   /// When a pending challenge auto-expires (matches expire-pending's rule):
   /// >=2 active participants -> 24h after the LAST joined_at; solo -> 24h after
-  /// created_at.
+  /// created_at. Friday Futures never expires — it launches on its own Friday
+  /// schedule (server kicks non-submitters at 1pm ET), so it has no 24h clock.
   Future<DateTime?> pendingExpiryAt(Challenge ch) async {
+    if (ch.eventType == 'friday-futures') return null;
     final v = await api.restGet('/challenge_participants', query: {
       'challenge_id': 'eq.${ch.id}',
       'removed_at': 'is.null',
