@@ -21,14 +21,15 @@ import '../models.dart';
 class PriceService {
   PriceService();
 
-  // ---- CoinPaprika (primary non-Binance source), keyed by ticker SYMBOL ----
-  Map<String, Map<String, dynamic>>? _cpMap;
+  // ---- CoinPaprika (SECONDARY source): per-symbol as a LIST (one ticker can
+  // belong to several projects — "EDGE" -> edgeX vs Definitive vs Edge) ----
+  Map<String, List<Map<String, dynamic>>>? _cpMap;
   DateTime? _cpAt;
   static const Duration _cpTtl = Duration(minutes: 15);
 
-  /// Fetches CoinPaprika `/v1/tickers` (all coins, one call) and indexes by
-  /// uppercase symbol (first-wins). Cached 15 min in-memory. 6s bound.
-  Future<Map<String, Map<String, dynamic>>> _coinpaprikaTickerMap(
+  /// Fetches CoinPaprika `/v1/tickers` and groups entries by uppercase symbol
+  /// (no first-wins). Cached 15 min in-memory. 6s bound.
+  Future<Map<String, List<Map<String, dynamic>>>> _coinpaprikaTickerMap(
       {bool force = false}) async {
     final now = DateTime.now();
     if (!force &&
@@ -43,24 +44,24 @@ class PriceService {
           .timeout(const Duration(seconds: 6));
       if (r.statusCode != 200) return _cpMap ?? {};
       final arr = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
-      final bySymbol = <String, Map<String, dynamic>>{};
+      final bySymbol = <String, List<Map<String, dynamic>>>{};
       double? toD(dynamic v) => (v is num) ? v.toDouble() : null;
       for (final x in arr) {
         final s = (x['symbol'] ?? '').toString().toUpperCase();
-        if (s.isEmpty || bySymbol.containsKey(s)) continue;
-        final q = (x['quotes'] is Map &&
-                ((x['quotes'] as Map)['USD'] is Map))
+        if (s.isEmpty) continue;
+        final q = (x['quotes'] is Map && ((x['quotes'] as Map)['USD'] is Map))
             ? (x['quotes'] as Map)['USD'] as Map
             : const <String, dynamic>{};
-        bySymbol[s] = {
+        (bySymbol[s] ??= []).add({
           'id': x['id'],
+          'name': x['name'] ?? '',
           'price': toD(q['price']),
           'chg24h': toD(q['percent_change_24h']),
           'chg7d': toD(q['percent_change_7d']),
           'marketCap': (q['market_cap'] is num)
               ? (q['market_cap'] as num).toDouble()
               : 0.0,
-        };
+        });
       }
       _cpMap = bySymbol;
       _cpAt = now;
@@ -68,6 +69,29 @@ class PriceService {
     } catch (_) {
       return _cpMap ?? {};
     }
+  }
+
+  /// Resolve a Coin to its CoinPaprika entry by IDENTITY (id mirrors the
+  /// CoinGecko slug, else display name), never by raw ticker. Ambiguous/unknown
+  /// -> null (falls through to CoinGecko, which is id-keyed).
+  Map<String, dynamic>? _coinpaprikaFor(
+      Coin c, Map<String, List<Map<String, dynamic>>> bySymbol) {
+    final cands = bySymbol[c.symbol.toUpperCase()] ?? const [];
+    if (cands.isEmpty) return null;
+    String norm(String s) =>
+        s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    final nid = norm(c.cgId), nname = norm(c.name);
+    var m = cands.where((e) {
+      final ni = norm((e['id'] ?? '').toString());
+      return ni == nid || ni.endsWith(nid) || nid.endsWith(ni);
+    }).toList();
+    if (m.length != 1) {
+      m = cands.where((e) {
+        final nn = norm((e['name'] ?? '').toString());
+        return nn == nname || nn.contains(nname) || nname.contains(nn);
+      }).toList();
+    }
+    return m.length == 1 ? m[0] : null;
   }
 
   // ---- Binance `/ticker/24hr` (price + 24h %), cached ~60s ----
@@ -130,84 +154,79 @@ class PriceService {
         now.difference(_marketsAt!) < _marketsTtl) {
       return _markets!;
     }
-    // Last-known warm start so a partial failure never blanks to 0.
-    final out = <String, Map<String, double>>{
-      if (_markets != null)
-        for (final e in _markets!.entries)
-          e.key: Map<String, double>.from(e.value),
-    };
+    final out = <String, Map<String, double>>{};
 
-    // 1) CoinPaprika primary: overwrite fresh price + 24h + 7d.
+    // 1) CANONICAL: CoinGecko /coins/markets keyed by EXACT coin id (identity).
+    try {
+      final futures = <Future<http.Response>>[];
+      for (var i = 0; i < coins.length; i += 40) {
+        final chunk = coins
+            .sublist(i, (i + 40).clamp(0, coins.length))
+            .map((c) => c.cgId)
+            .toList();
+        futures.add(http
+            .get(Uri.parse(
+                'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${chunk.join(',')}&price_change_percentage=7d,24h'))
+            .timeout(const Duration(seconds: 4)));
+      }
+      final results = await Future.wait(futures);
+      double? f(dynamic v) => (v is num) ? v.toDouble() : null;
+      for (final r in results) {
+        if (r.statusCode != 200) continue;
+        final list =
+            (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+        for (final e in list) {
+          out[e['id'] as String] = {
+            'price': (e['current_price'] is num)
+                ? (e['current_price'] as num).toDouble()
+                : 0,
+            'pct24h': f(e['price_change_percentage_24h_in_currency']) ?? 0,
+            'chg7d': f(e['price_change_percentage_7d_in_currency']) ?? 0,
+          };
+        }
+      }
+    } catch (_) {}
+
+    // 2) Fallback for coins CoinGecko missed: CoinPaprika by identity, then
+    //    Binance (static-guarded).
     final cp = await _coinpaprikaTickerMap();
-    for (final c in coins) {
-      final e = cp[c.symbol.toUpperCase()];
-      if (e == null) continue;
-      final price = (e['price'] is num && (e['price'] as num) > 0)
-          ? (e['price'] as num).toDouble()
-          : null;
-      final chg24h =
-          e['chg24h'] is num ? (e['chg24h'] as num).toDouble() : null;
-      final chg7d = e['chg7d'] is num ? (e['chg7d'] as num).toDouble() : null;
-      out[c.cgId] = {
-        'price': price ?? 0,
-        'pct24h': chg24h ?? 0,
-        'chg7d': chg7d ?? 0,
-      };
-    }
-
-    // 2) Binance fallback (non-ambiguous): fill price + 24h where CoinPaprika
-    //    lacked it.
     final bin = await _binanceTicker24h();
     final binChg = _binChg ?? {};
     for (final c in coins) {
+      if ((out[c.cgId]?['price'] ?? 0) > 0) continue;
+      final e = _coinpaprikaFor(c, cp);
+      if (e != null) {
+        final price = (e['price'] is num && (e['price'] as num) > 0)
+            ? (e['price'] as num).toDouble()
+            : null;
+        if (price != null) {
+          out[c.cgId] = {
+            'price': price,
+            'pct24h': (e['chg24h'] is num) ? (e['chg24h'] as num).toDouble() : 0,
+            'chg7d': (e['chg7d'] is num) ? (e['chg7d'] as num).toDouble() : 0,
+          };
+          continue;
+        }
+      }
       if (_binAmbiguous.contains(c.symbol.toUpperCase())) continue;
       final bp = bin['${c.symbol}USDT'] ?? bin['${c.symbol}USD'];
-      if (bp != null &&
-          bp > 0 &&
-          !(out[c.cgId] != null && (out[c.cgId]!['price'] ?? 0) > 0)) {
+      if (bp != null && bp > 0) {
         out[c.cgId] = {
           'price': bp,
           'pct24h':
               binChg['${c.symbol}USDT'] ?? binChg['${c.symbol}USD'] ?? 0,
-          'chg7d': out[c.cgId]?['chg7d'] ?? 0,
+          'chg7d': 0,
         };
       }
     }
 
-    // 3) CoinGecko final backstop for coins still missing.
-    final missing = coins
-        .where((c) =>
-            !(out[c.cgId] != null && (out[c.cgId]!['price'] ?? 0) > 0))
-        .map((c) => c.cgId)
-        .toList();
-    if (missing.isNotEmpty) {
-      try {
-        final futures = <Future<http.Response>>[];
-        for (var i = 0; i < missing.length; i += 40) {
-          final chunk =
-              missing.sublist(i, (i + 40).clamp(0, missing.length));
-          futures.add(http
-              .get(Uri.parse(
-                  'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${chunk.join(',')}&price_change_percentage=7d,24h'))
-              .timeout(const Duration(seconds: 4)));
+    // 3) Last-known backstop so a partial source failure never blanks to 0.
+    if (_markets != null) {
+      for (final c in coins) {
+        if (!((out[c.cgId]?['price'] ?? 0) > 0) && _markets![c.cgId] != null) {
+          out[c.cgId] = Map<String, double>.from(_markets![c.cgId]!);
         }
-        final results = await Future.wait(futures);
-        double? f(dynamic v) => (v is num) ? v.toDouble() : null;
-        for (final r in results) {
-          if (r.statusCode != 200) continue;
-          final list =
-              (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
-          for (final e in list) {
-            out[e['id'] as String] = {
-              'price': (e['current_price'] is num)
-                  ? (e['current_price'] as num).toDouble()
-                  : 0,
-              'pct24h': f(e['price_change_percentage_24h_in_currency']) ?? 0,
-              'chg7d': f(e['price_change_percentage_7d_in_currency']) ?? 0,
-            };
-          }
-        }
-      } catch (_) {}
+      }
     }
 
     _markets = out;
@@ -221,47 +240,30 @@ class PriceService {
   // ambiguous/legacy coins (LIT/BTT/XMR + any symbol Binance doesn't trust).
   Future<Map<String, double>> currentPrices(
       List<Map<String, String>> coins) async {
+    // Canonical: CoinGecko by id is ground truth; Binance only overrides when
+    // its SYMBOL+USDT agrees with the canonical id price (<=15%).
     final bin = await _binanceTicker24h();
-    final cp = await _coinpaprikaTickerMap();
+    final ids = coins
+        .map((c) => c['cgId'] ?? '')
+        .where((id) => id.isNotEmpty)
+        .toList();
+    final cg = await _coingeckoSimple(ids);
     final out = <String, double>{};
-    final needCg = <String>[];
 
     for (final c in coins) {
-      final symbol = (c['symbol'] ?? '').toUpperCase();
       final cgId = c['cgId'] ?? '';
       if (cgId.isEmpty) continue;
+      final symbol = (c['symbol'] ?? '').toUpperCase();
+      final cgv = cg[cgId];
       final bp = bin['${symbol}USDT'];
-      final cpEntry = cp[symbol];
-      final cpv = (cpEntry != null && cpEntry['price'] is num)
-          ? (cpEntry['price'] as num).toDouble()
-          : null;
-
-      if (_binAmbiguous.contains(symbol)) {
-        // Never trust Binance for these; CoinGecko (by cgId) is authoritative
-        // for the actual token the holding references.
-        needCg.add(cgId);
-        continue;
-      }
-      if ((bp != null && bp > 0) && (cpv != null && cpv > 0)) {
-        if ((bp / cpv - 1).abs() > 0.15) {
-          out[cgId] = cpv; // ticker collision -> CoinPaprika
-        } else {
-          out[cgId] = bp; // agree -> Binance (fast + fresh)
-        }
-      } else if (bp != null && bp > 0) {
-        out[cgId] = bp;
-      } else if (cpv != null && cpv > 0) {
-        out[cgId] = cpv; // no Binance pair -> CoinPaprika
-      } else {
-        needCg.add(cgId); // neither -> CoinGecko backstop
-      }
-    }
-
-    if (needCg.isNotEmpty) {
-      final cg = await _coingeckoSimple(needCg);
-      for (final id in needCg) {
-        final p = cg[id];
-        if (p != null && p > 0) out[id] = p;
+      if (bp != null &&
+          bp > 0 &&
+          cgv != null &&
+          cgv > 0 &&
+          (bp / cgv - 1).abs() <= 0.15) {
+        out[cgId] = bp; // Binance confirms same token -> fresh/fast
+      } else if (cgv != null && cgv > 0) {
+        out[cgId] = cgv; // canonical (Binance absent / diverged / ambiguous)
       }
     }
     return out;
@@ -307,27 +309,10 @@ class PriceService {
       required DateTime end}) async {
     final startMs = start.millisecondsSinceEpoch;
     final endMs = end.millisecondsSinceEpoch;
-    if (_binAmbiguous.contains(symbol)) {
-      // skip Binance — its ticker is a different token
-    } else {
-      try {
-        final r = await http
-            .get(Uri.parse(
-                'https://data-api.binance.vision/api/v3/klines?symbol=${symbol}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'))
-            .timeout(const Duration(seconds: 3));
-        if (r.statusCode == 200) {
-          final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
-          return rows
-              .map((k) => (
-                    DateTime.fromMillisecondsSinceEpoch((k[0] as num).toInt()),
-                    double.parse(k[4] as String),
-                  ))
-              .toList();
-        }
-      } catch (_) {}
-    }
+    final symU = symbol.toUpperCase();
 
-    // CoinGecko fallback
+    // Canonical history keyed by id first (right token), then Binance klines
+    // only when its symbol is confirmed the same token (cross-checked).
     try {
       final days = ((end.difference(start).inHours / 24).ceil()).clamp(1, 90);
       final r = await http
@@ -337,14 +322,40 @@ class PriceService {
       if (r.statusCode == 200) {
         final prices =
             (jsonDecode(r.body) as Map<String, dynamic>)['prices'] as List;
-        return prices
+        final pts = prices
             .map((p) => (
                   DateTime.fromMillisecondsSinceEpoch((p[0] as num).toInt()),
                   (p[1] as num).toDouble(),
                 ))
+            .where((p) => !p.$1.isBefore(start) && !p.$1.isAfter(end))
             .toList();
+        if (pts.isNotEmpty) return pts;
       }
     } catch (_) {}
+
+    final bin = await _binanceTicker24h();
+    final bp = bin['${symU}USDT'];
+    if (bp != null && bp > 0) {
+      try {
+        final cgv = (await _coingeckoSimple([cgId]))[cgId];
+        if (cgv != null && cgv > 0 && (bp / cgv - 1).abs() <= 0.15) {
+          final r = await http
+              .get(Uri.parse(
+                  'https://data-api.binance.vision/api/v3/klines?symbol=${symU}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'))
+              .timeout(const Duration(seconds: 3));
+          if (r.statusCode == 200) {
+            final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
+            return rows
+                .map((k) => (
+                      DateTime.fromMillisecondsSinceEpoch(
+                          (k[0] as num).toInt()),
+                      double.parse(k[4] as String),
+                    ))
+                .toList();
+          }
+        }
+      } catch (_) {}
+    }
 
     return const [];
   }
