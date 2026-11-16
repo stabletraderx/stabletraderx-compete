@@ -222,3 +222,47 @@ class Coin {
   }
   return (spent: spent, portfolio: portfolio);
 }
+
+/// A coin pack in the catalog (pack_id, name, unlock_level).
+class CoinPack {
+  final String packId;
+  final String name;
+  final int unlockLevel;
+  const CoinPack(this.packId, this.name, this.unlockLevel);
+
+  factory CoinPack.fromJson(Map<String, dynamic> j) => CoinPack(
+        _s(j['pack_id']),
+        _s(j['name']),
+        _i(j['unlock_level']) ?? 0,
+      );
+}
+
+/// An unlocked pack + its coins, rendered as one "folder" in the coin picker.
+class UnlockedPack {
+  final CoinPack pack;
+  final List<Coin> coins;
+  const UnlockedPack(this.pack, this.coins);
+}
+
+/// A reward-event inbox row (what the reward-card flow drains + shows).
+class RewardEvent {
+  final int id;
+  final String kind;
+  final Map<String, dynamic> payload;
+  final DateTime? createdAt;
+  const RewardEvent({
+    required this.id,
+    required this.kind,
+    this.payload = const {},
+    this.createdAt,
+  });
+
+  factory RewardEvent.fromJson(Map<String, dynamic> j) => RewardEvent(
+        id: _i(j['id']) ?? 0,
+        kind: _s(j['kind']),
+        payload: (j['payload'] is Map)
+            ? (j['payload'] as Map).cast<String, dynamic>()
+            : const {},
+        createdAt: _dt(j['created_at']),
+      );
+}

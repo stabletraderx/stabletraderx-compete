@@ -380,6 +380,97 @@ class ChallengeService {
     return null;
   }
 
+  // ---- coin packs (level-gated coin unlocks) ----
+
+  /// My unlocked pack ids (from user_unlocked_packs).
+  Future<Set<String>> myUnlockedPackIds() async {
+    final v = await api.restGet('/user_unlocked_packs',
+        query: {'user_id': 'eq.$_me', 'select': 'pack_id'});
+    if (v is! List) return <String>{};
+    return v
+        .map((e) => (e is Map ? e['pack_id']?.toString() : null) ?? '')
+        .where((s) => s.isNotEmpty)
+        .toSet();
+  }
+
+  /// The pack catalog (pack_id, name, unlock_level), ascending by level.
+  Future<List<CoinPack>> coinPacks() async {
+    final v =
+        await api.restGet('/coin_packs', query: {'order': 'unlock_level.asc'});
+    if (v is List) {
+      return v
+          .map((e) => CoinPack.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+    }
+    return const [];
+  }
+
+  /// All pack coins (is_base=false), grouped by pack_id, alphabetized by ticker.
+  Future<Map<String, List<Coin>>> packCoinsByPack() async {
+    final v = await api.restGet('/coins',
+        query: {'is_base': 'eq.false', 'select': 'coin_id,ticker,name,pack_id'});
+    final m = <String, List<Coin>>{};
+    if (v is List) {
+      for (final e in v) {
+        final j = (e as Map).cast<String, dynamic>();
+        final pack = j['pack_id']?.toString();
+        if (pack == null || pack.isEmpty) continue;
+        (m[pack] ??= []).add(Coin(
+          j['ticker']?.toString() ?? '',
+          j['name']?.toString() ?? '',
+          j['coin_id']?.toString() ?? '',
+        ));
+      }
+    }
+    m.forEach((_, list) => list.sort((a, b) => a.symbol.compareTo(b.symbol)));
+    return m;
+  }
+
+  /// My unlocked packs with their coins, ordered by unlock level — the picker's
+  /// "folders" above the base coins. Empty when I have unlocked no packs.
+  Future<List<UnlockedPack>> unlockedPackCoins() async {
+    final ids = await myUnlockedPackIds();
+    if (ids.isEmpty) return const [];
+    final packs = await coinPacks();
+    final byPack = await packCoinsByPack();
+    final out = <UnlockedPack>[];
+    for (final p in packs) {
+      if (!ids.contains(p.packId)) continue;
+      final coins = byPack[p.packId];
+      if (coins == null || coins.isEmpty) continue;
+      out.add(UnlockedPack(p, coins));
+    }
+    return out;
+  }
+
+  // ---- reward inbox ----
+
+  /// Fetch my undrained reward events, mark them drained, and return them
+  /// newest-first so the caller can show them (daisy-chained). Mirrors the
+  /// web's drainRewards().
+  Future<List<RewardEvent>> drainRewards() async {
+    final v = await api.restGet('/reward_events', query: {
+      'user_id': 'eq.$_me',
+      'drained_at': 'is.null',
+      'order': 'created_at.asc',
+    });
+    final events = <RewardEvent>[];
+    if (v is List) {
+      for (final e in v) {
+        events.add(RewardEvent.fromJson((e as Map).cast<String, dynamic>()));
+      }
+    }
+    if (events.isEmpty) return const [];
+    final ids = events.map((e) => e.id).toList();
+    await api.restPatch('/reward_events', {
+      'drained_at': DateTime.now().toUtc().toIso8601String(),
+    }, query: {
+      'id': 'in.(${ids.join(',')})',
+      'user_id': 'eq.$_me',
+    });
+    return events.reversed.toList();
+  }
+
   // ---- helpers ----
 
   List<Challenge> _challengeList(dynamic v) {

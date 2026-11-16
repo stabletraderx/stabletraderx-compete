@@ -86,6 +86,7 @@ class _HomeShellState extends State<HomeShell> {
       };
       if (!mounted) return;
       setState(() => _expiryByChallenge.addAll(expiry));
+      _drainRewards();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -503,6 +504,138 @@ class _HomeShellState extends State<HomeShell> {
       default:
         return status;
     }
+  }
+
+  // ---- reward cards (drained from the reward_events inbox) ----
+
+  Future<void> _drainRewards() async {
+    try {
+      final events = await _svc.drainRewards();
+      if (!mounted || events.isEmpty) return;
+      _showRewardChain(events);
+    } catch (_) {}
+  }
+
+  void _showRewardChain(List<RewardEvent> events) {
+    Future<void> show(int i) async {
+      if (!mounted || i >= events.length) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _rewardDialog(events[i]),
+      );
+      if (mounted) await show(i + 1);
+    }
+
+    show(0);
+  }
+
+  String _rewardTitle(String kind) {
+    switch (kind) {
+      case 'achievement':
+        return 'Achievement unlocked';
+      case 'ff_streak':
+        return 'Friday Futures streak';
+      default:
+        return 'Challenge complete';
+    }
+  }
+
+  List<Widget> _rewardBody(RewardEvent e) {
+    final p = e.payload;
+    final w = <Widget>[];
+    final xp = (p['xp'] is num) ? (p['xp'] as num).toInt() : 0;
+    if (xp > 0) {
+      w.add(Text('+$xp XP',
+          style: const TextStyle(
+              color: AppColors.green,
+              fontWeight: FontWeight.w700,
+              fontSize: 18)));
+      w.add(const SizedBox(height: 10));
+    }
+    final lvl = p['level_up'];
+    if (lvl is Map) {
+      final title = lvl['title']?.toString() ?? '';
+      w.add(Text(
+        title.isNotEmpty ? 'Level up — $title' : 'Level up!',
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ));
+      w.add(const SizedBox(height: 8));
+    }
+    final badges = p['badges'];
+    if (badges is List) {
+      for (final b in badges) {
+        if (b is! Map) continue;
+        final emoji = b['emoji']?.toString() ?? '';
+        final name = b['name']?.toString() ?? '';
+        final desc = b['description']?.toString() ?? '';
+        w.add(Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (emoji.isNotEmpty) ...[
+                Text(emoji, style: const TextStyle(fontSize: 18)),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Text(name,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        ));
+        if (desc.isNotEmpty) {
+          w.add(Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(desc,
+                style: const TextStyle(color: AppColors.dim, fontSize: 12)),
+          ));
+        }
+      }
+    }
+    final packs = p['packs'];
+    if (packs is List && packs.isNotEmpty) {
+      w.add(const Text('New coin pack unlocked',
+          style: TextStyle(
+              color: AppColors.green, fontWeight: FontWeight.w600)));
+      for (final pk in packs) {
+        if (pk is! Map) continue;
+        final name = pk['name']?.toString() ?? '';
+        final coins = pk['coins'];
+        final ticks = <String>[];
+        if (coins is List) {
+          for (final c in coins) {
+            if (c is List && c.isNotEmpty) ticks.add(c[0].toString());
+          }
+        }
+        w.add(Text('$name${ticks.isNotEmpty ? ' — ${ticks.join(', ')}' : ''}',
+            style: const TextStyle(fontSize: 13)));
+      }
+    }
+    if (w.isEmpty) {
+      w.add(const Text('Nice work!'));
+    }
+    return w;
+  }
+
+  Widget _rewardDialog(RewardEvent e) {
+    return AlertDialog(
+      title: Text(_rewardTitle(e.kind)),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: _rewardBody(e),
+        ),
+      ),
+      actions: [
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Nice!'),
+        ),
+      ],
+    );
   }
 
   Future<Map<String, dynamic>?> _showCreateDialog() async {

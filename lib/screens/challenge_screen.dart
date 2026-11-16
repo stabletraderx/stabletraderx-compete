@@ -137,8 +137,14 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
       _toast('You can only pick ${ch.maxAssets} coins.');
       return;
     }
+    final packs = await _svc.unlockedPackCoins();
+    final coins = <Coin>[...presetCoins];
+    for (final up in packs) {
+      coins.addAll(up.coins);
+    }
     final pick = await _showAddHoldingDialog(
-      await _price.presetMarkets(presetCoins),
+      await _price.presetMarkets(coins),
+      packs,
     );
     if (pick == null) return;
     setState(() => _busy = true);
@@ -930,10 +936,47 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     return '${c.symbol}$alt — ${c.name}$pxStr$pctStr';
   }
 
+  List<DropdownMenuItem<Coin>> _coinItems(
+    Map<String, Map<String, double>> markets,
+    List<UnlockedPack> packs,
+  ) {
+    final items = <DropdownMenuItem<Coin>>[];
+    // Unlocked packs first, each as a labelled folder (a disabled header item,
+    // then its coins), then the base coins.
+    for (final up in packs) {
+      items.add(DropdownMenuItem<Coin>(
+        enabled: false,
+        value: Coin('', '', '__hdr__${up.pack.packId}'),
+        child: Text(
+          'Lvl ${up.pack.unlockLevel} · ${up.pack.name}',
+          style: const TextStyle(
+            color: AppColors.green,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+        ),
+      ));
+      for (final c in up.coins) {
+        items.add(DropdownMenuItem<Coin>(
+          value: c,
+          child: Text(_marketLabel(c, markets), overflow: TextOverflow.ellipsis),
+        ));
+      }
+    }
+    for (final c in presetCoins) {
+      items.add(DropdownMenuItem<Coin>(
+        value: c,
+        child: Text(_marketLabel(c, markets), overflow: TextOverflow.ellipsis),
+      ));
+    }
+    return items;
+  }
+
   // ---- add-holding dialog ----
 
   Future<({Coin coin, double stake})?> _showAddHoldingDialog(
     Map<String, Map<String, double>> markets,
+    List<UnlockedPack> packs,
   ) async {
     Coin? coin = presetCoins.first;
     final amountCtrl = TextEditingController();
@@ -951,17 +994,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
                 DropdownButtonFormField<Coin>(
                   initialValue: presetCoins.first,
                   decoration: const InputDecoration(labelText: 'Coin'),
-                  items: presetCoins
-                      .map(
-                        (c) => DropdownMenuItem(
-                          value: c,
-                          child: Text(
-                            _marketLabel(c, markets),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      )
-                      .toList(),
+                  items: _coinItems(markets, packs),
                   onChanged: (v) => setD(() => coin = v),
                 ),
                 const SizedBox(height: 12),
