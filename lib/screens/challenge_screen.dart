@@ -934,7 +934,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     final pct = m?['chg7d'] ?? 0;
     final pxStr = px > 0 ? ' · ${fmtPrice(px)}' : '';
     final pctStr = pct != 0
-        ? ' · ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
+        ? ' · 7d ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
         : '';
     final alt = altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : '';
     return '${c.symbol}$alt — ${c.name}$pxStr$pctStr';

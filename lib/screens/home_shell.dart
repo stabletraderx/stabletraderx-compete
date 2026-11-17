@@ -214,7 +214,7 @@ class _HomeShellState extends State<HomeShell> {
 
   String get _title => switch (_tab) {
         0 => 'Home',
-        1 => 'Challenges',
+        1 => 'Games',
         2 => 'Top players',
         _ => 'Profile',
       };
@@ -254,7 +254,7 @@ class _HomeShellState extends State<HomeShell> {
           NavigationDestination(
               icon: Icon(Icons.grid_view_outlined),
               selectedIcon: Icon(Icons.grid_view),
-              label: 'Challenges'),
+              label: 'Games'),
           NavigationDestination(
               icon: Icon(Icons.emoji_events_outlined),
               selectedIcon: Icon(Icons.emoji_events),

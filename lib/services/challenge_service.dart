@@ -440,6 +440,8 @@ class ChallengeService {
       if (coins == null || coins.isEmpty) continue;
       out.add(UnlockedPack(p, coins));
     }
+    // Most-recently-unlocked first (highest level), mirroring the web picker.
+    out.sort((a, b) => b.pack.unlockLevel.compareTo(a.pack.unlockLevel));
     return out;
   }
 
