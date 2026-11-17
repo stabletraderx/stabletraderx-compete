@@ -300,8 +300,10 @@ class PriceService {
     return map;
   }
 
-  /// Hourly price history for a coin over [start]..[end]. Binance `klines`
-  /// primary; CoinGecko `market_chart` fallback. Returns `(time, price)` points.
+  /// Hourly price history for a coin over [start]..[end]. Binance `klines` PRIMARY
+  /// (keyless/CORS/absolute timestamps -> works for FINISHED games); CoinGecko
+  /// `market_chart` fallback (spanned back from NOW to start, keyed by id) for
+  /// coins Binance lacks or whose ticker diverges. Returns `(time, price)` points.
   Future<List<(DateTime, double)>> history(
       {required String symbol,
       required String cgId,
@@ -311,10 +313,43 @@ class PriceService {
     final endMs = end.millisecondsSinceEpoch;
     final symU = symbol.toUpperCase();
 
-    // Canonical history keyed by id first (right token), then Binance klines
-    // only when its symbol is confirmed the same token (cross-checked).
+    // Binance primary (absolute timestamps -> correct for finished games), gated by
+    // the reused-ticker guard + a cross-check against a non-Binance price so a
+    // delisted/rebranded symbol can't phantom the line. Trust Binance when the
+    // cross-check is unavailable (CoinGecko 429) — the guard covers the known three.
+    if (!_binAmbiguous.contains(symU)) {
+      try {
+        final bin = await _binanceTicker24h();
+        final bp = bin['${symU}USDT'];
+        if (bp != null && bp > 0) {
+          final cgv = (await _coingeckoSimple([cgId]))[cgId];
+          if (cgv == null || cgv <= 0 || (bp / cgv - 1).abs() <= 0.15) {
+            final r = await http
+                .get(Uri.parse(
+                    'https://data-api.binance.vision/api/v3/klines?symbol=${symU}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'))
+                .timeout(const Duration(seconds: 3));
+            if (r.statusCode == 200) {
+              final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
+              final pts = rows
+                  .map((k) => (
+                        DateTime.fromMillisecondsSinceEpoch(
+                            (k[0] as num).toInt()),
+                        double.parse(k[4] as String),
+                      ))
+                  .toList();
+              if (pts.isNotEmpty) return pts;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // CoinGecko market_chart (canonical by id) — span back from NOW to start so a
+    // finished game still returns its window (the old `days = end-start` flattened
+    // finished-games because market_chart returns the last N days ending NOW).
     try {
-      final days = ((end.difference(start).inHours / 24).ceil()).clamp(1, 90);
+      final days =
+          ((DateTime.now().difference(start).inHours / 24).ceil() + 1).clamp(1, 90);
       final r = await http
           .get(Uri.parse(
               'https://api.coingecko.com/api/v3/coins/$cgId/market_chart?vs_currency=usd&days=$days'))
@@ -332,30 +367,6 @@ class PriceService {
         if (pts.isNotEmpty) return pts;
       }
     } catch (_) {}
-
-    final bin = await _binanceTicker24h();
-    final bp = bin['${symU}USDT'];
-    if (bp != null && bp > 0) {
-      try {
-        final cgv = (await _coingeckoSimple([cgId]))[cgId];
-        if (cgv != null && cgv > 0 && (bp / cgv - 1).abs() <= 0.15) {
-          final r = await http
-              .get(Uri.parse(
-                  'https://data-api.binance.vision/api/v3/klines?symbol=${symU}USDT&interval=1h&startTime=$startMs&endTime=$endMs&limit=1000'))
-              .timeout(const Duration(seconds: 3));
-          if (r.statusCode == 200) {
-            final rows = (jsonDecode(r.body) as List).cast<List<dynamic>>();
-            return rows
-                .map((k) => (
-                      DateTime.fromMillisecondsSinceEpoch(
-                          (k[0] as num).toInt()),
-                      double.parse(k[4] as String),
-                    ))
-                .toList();
-          }
-        }
-      } catch (_) {}
-    }
 
     return const [];
   }

@@ -924,10 +924,14 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
     return v.toStringAsFixed(0);
   }
 
+  Color _chgColor(double chg) => chg > 0
+      ? AppColors.green
+      : (chg < 0 ? AppColors.red : AppColors.ink);
+
   String _marketLabel(Coin c, Map<String, Map<String, double>> markets) {
     final m = markets[c.cgId];
     final px = m?['price'] ?? 0;
-    final pct = m?['pct24h'] ?? 0;
+    final pct = m?['chg7d'] ?? 0;
     final pxStr = px > 0 ? ' · ${fmtPrice(px)}' : '';
     final pctStr = pct != 0
         ? ' · ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
@@ -957,16 +961,36 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         ),
       ));
       for (final c in up.coins) {
+        final chg7d = markets[c.cgId]?['chg7d'] ?? 0;
         items.add(DropdownMenuItem<Coin>(
           value: c,
-          child: Text(_marketLabel(c, markets), overflow: TextOverflow.ellipsis),
+          child: Text(_marketLabel(c, markets),
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: _chgColor(chg7d))),
         ));
       }
     }
+    if (presetCoins.isNotEmpty) {
+      items.add(DropdownMenuItem<Coin>(
+        enabled: false,
+        value: const Coin('', '', '__hdr__default'),
+        child: Text(
+          'Default',
+          style: const TextStyle(
+            color: AppColors.green,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+        ),
+      ));
+    }
     for (final c in presetCoins) {
+      final chg7d = markets[c.cgId]?['chg7d'] ?? 0;
       items.add(DropdownMenuItem<Coin>(
         value: c,
-        child: Text(_marketLabel(c, markets), overflow: TextOverflow.ellipsis),
+        child: Text(_marketLabel(c, markets),
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: _chgColor(chg7d))),
       ));
     }
     return items;
