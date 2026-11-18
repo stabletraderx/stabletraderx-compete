@@ -143,7 +143,7 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
       coins.addAll(up.coins);
     }
     final pick = await _showAddHoldingDialog(
-      await _price.presetMarkets(coins),
+      await _price.presetMarkets(coins, force: true),
       packs,
     );
     if (pick == null) return;
@@ -931,10 +931,10 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
   String _marketLabel(Coin c, Map<String, Map<String, double>> markets) {
     final m = markets[c.cgId];
     final px = m?['price'] ?? 0;
-    final pct = m?['chg7d'] ?? 0;
+    final pct = m?['pct24h'] ?? 0;
     final pxStr = px > 0 ? ' · ${fmtPrice(px)}' : '';
     final pctStr = pct != 0
-        ? ' · 7d ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
+        ? ' · 24h ${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%'
         : '';
     final alt = altTicker.containsKey(c.cgId) ? ' (${altTicker[c.cgId]})' : '';
     return '${c.symbol}$alt — ${c.name}$pxStr$pctStr';
@@ -961,12 +961,12 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
         ),
       ));
       for (final c in up.coins) {
-        final chg7d = markets[c.cgId]?['chg7d'] ?? 0;
+        final chg24h = markets[c.cgId]?['pct24h'] ?? 0;
         items.add(DropdownMenuItem<Coin>(
           value: c,
           child: Text(_marketLabel(c, markets),
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: _chgColor(chg7d))),
+              style: TextStyle(color: _chgColor(chg24h))),
         ));
       }
     }
@@ -985,12 +985,12 @@ class _ChallengeScreenState extends State<ChallengeScreen> {
       ));
     }
     for (final c in presetCoins) {
-      final chg7d = markets[c.cgId]?['chg7d'] ?? 0;
+      final chg24h = markets[c.cgId]?['pct24h'] ?? 0;
       items.add(DropdownMenuItem<Coin>(
         value: c,
         child: Text(_marketLabel(c, markets),
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: _chgColor(chg7d))),
+            style: TextStyle(color: _chgColor(chg24h))),
       ));
     }
     return items;
